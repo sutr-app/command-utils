@@ -124,30 +124,9 @@ impl SentenceSplitter {
         sentences.into()
     }
 
-    // split by regex
-    // can use only nightly rust. add attribute
-    #[cfg(feature = "nightly")]
-    pub fn split_with_div_regex<'a>(r: &Regex, text: &'a str) -> Vec<&'a str> {
-        let mut result = Vec::new();
-        let mut last = 0;
-        for (index, matched) in text.match_indices(r) {
-            if last != index {
-                result.push(&text[last..index]);
-            }
-            result.push(matched);
-            last = index + matched.len();
-        }
-        if last < text.len() {
-            result.push(&text[last..]);
-        }
-        result
-    }
-    #[cfg(not(feature = "nightly"))]
     pub fn split_with_div_regex<'a>(r: &Regex, text: &'a str) -> Vec<&'a str> {
         // parse timed text by token '<|time|>', and divide to vec
         // ex. "<|7.54|> All the time.<|12.34|><|12.98|> Interviews.<|15.50|><|16.04|> I'm your host.<|17.74|>" -> vec!["<|7.54|>"," All the time.","<|12.34|>","<|12.98|>"," Interviews.","<|15.50|>","<|16.04|>"," I'm your host.","<|17.74|>"]
-        // test case: test_split_with_timed_token()
-
         let mut divided = vec![];
         let mut prev = 0;
         for m in r.find_iter(text) {
@@ -250,5 +229,26 @@ mod tests {
             "<|27.40|>",
         ];
         assert_eq!(SentenceSplitter::split_with_div_regex(&r, text), expected);
+
+        let text = format!("<|20.00|> abcdefg<|29.80|>");
+        let expected = vec!["<|20.00|>", " abcdefg", "<|29.80|>"];
+        assert_eq!(
+            SentenceSplitter::split_with_div_regex(&r, text.as_str()),
+            expected
+        );
+
+        let text = format!("<text<");
+        let expected = vec!["<text<"];
+        assert_eq!(
+            SentenceSplitter::split_with_div_regex(&r, text.as_str()),
+            expected
+        );
+
+        let text = format!("<|00.80|>");
+        let expected = vec!["<|00.80|>"];
+        assert_eq!(
+            SentenceSplitter::split_with_div_regex(&r, text.as_str()),
+            expected
+        );
     }
 }
