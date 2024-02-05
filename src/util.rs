@@ -356,3 +356,45 @@ pub mod datetime {
         //.ymd(year, month, day).and_hms(hour, min, sec)
     }
 }
+pub mod text {
+    use super::option::FlatMap;
+    use regex::Regex;
+
+    // https://stackoverflow.com/a/6041965
+    const URL_REGEX: &str = r"((?:http|ftp|https):\/\/(:?[\w_-]+(?:(?:\.[\w_-]+)+))(?:[\w.,@?^=%&:\/~+#-]*[\w@?^=%&\/~+#-]))";
+    pub fn extract_url_simple(message: &str) -> Option<&str> {
+        let re = Regex::new(URL_REGEX).unwrap();
+        re.captures(message)
+            .flat_map(|c| c.get(1).map(|s| s.as_str()))
+    }
+
+    // create test for extract_url_simple
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn test_extract_url_simple() {
+            let url = "https://www.google.com/";
+            let mes = format!("hello, <a href=\"{}\">fuga</a>", url);
+            assert_eq!(extract_url_simple(&mes), Some(url));
+            let mes = format!("\"{}\"", url);
+            assert_eq!(extract_url_simple(&mes), Some(url));
+            let mes = format!("<\"{}\">", url);
+            assert_eq!(extract_url_simple(&mes), Some(url));
+            let mes = format!("\"<\"{}\">\"", url);
+            assert_eq!(extract_url_simple(&mes), Some(url));
+        }
+        #[test]
+        fn test_extract_url_simple_with_queries() {
+            let url = "https://www.google.com?q=hello&lang=en#top";
+            let mes = format!("hello, {}", url);
+            assert_eq!(extract_url_simple(&mes), Some(url));
+            let mes = format!("\"{}\"", url);
+            assert_eq!(extract_url_simple(&mes), Some(url));
+            let mes = format!("<\"{}\">", url);
+            assert_eq!(extract_url_simple(&mes), Some(url));
+            let mes = format!("\"<\"{}\">\"", url);
+            assert_eq!(extract_url_simple(&mes), Some(url));
+        }
+    }
+}
