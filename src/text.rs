@@ -1,15 +1,17 @@
+use anyhow::{Context, Result};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-pub struct SentenceSplitter {
-    max_buf_length: usize,
-    stop_chars: HashSet<char>,
-    force: HashSet<char>,
-    parentheses: HashMap<char, char>,
-    rev_parentheses: HashMap<char, char>,
+// for deserialize from env
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct SentenceSplitterCreator {
+    pub max_buf_length: Option<usize>,
+    pub delimiter_chars: Option<String>,
+    pub force: Option<String>,
+    pub parenthese_pairs: Option<String>,
 }
-
-impl SentenceSplitter {
+impl SentenceSplitterCreator {
     // max input length for bert (max_position_embeddings)
     pub const DEFAULT_MAX_LENGTH: usize = 512;
 
@@ -17,39 +19,84 @@ impl SentenceSplitter {
     // ()[]は半角で使うことの方が多そうでプログラミングや顔文字など文以外でも使われる。
     // 正規化してもいいが半角のものとまざるし片方だけでも使われるケースがあるので危い。
     // これをまとめて役立つケースの方が少ない感じがするので一旦扱わない
-    pub const PARENTHESES: [(char, char); 3] = [('「', '」'), ('『', '』'), ('【', '】')];
+    pub const PARENTHESE_PAIRS: [(char, char); 3] = [('「', '」'), ('『', '』'), ('【', '】')];
 
     // 正規化するよりは全角を特別扱いしたい"." (日本語文だと区切りで扱わない方がurlなどを過剰分割しないので良さそう)
     // があるので両方マッチしていいものは明示的に列挙する
-    pub const STOP_CHARS: [char; 7] = ['。', '．', '！', '？', '!', '?', '\n'];
+    pub const DELIMITER_CHARS: [char; 7] = ['。', '．', '！', '？', '!', '?', '\n'];
 
     pub fn new(
         max_buf_length: Option<usize>,
-        stop_chars: Option<HashSet<char>>,
-        force: Option<HashSet<char>>,
-        parentheses: Option<HashMap<char, char>>,
+        delimiter_chars: Option<String>,
+        force: Option<String>,
+        parenthese_pairs: Option<String>,
     ) -> Self {
-        let max_buf_length = max_buf_length.unwrap_or(Self::DEFAULT_MAX_LENGTH);
-        let mut stop_chars = stop_chars.unwrap_or(Self::STOP_CHARS.iter().cloned().collect());
-        let force = force
-            .map(|f| {
-                stop_chars.extend(f.iter().cloned());
-                f
-            })
+        Self {
+            max_buf_length,
+            delimiter_chars,
+            force,
+            parenthese_pairs,
+        }
+    }
+    pub fn new_by_env() -> Result<Self> {
+        envy::prefixed("SENTENCE_SPLITTER_")
+            .from_env::<SentenceSplitterCreator>()
+            .context("cannot read SENTENCE_SPLITTER settings from env:")
+    }
+    pub fn create(&self) -> Result<SentenceSplitter> {
+        let max_buf_length = self.max_buf_length.unwrap_or(Self::DEFAULT_MAX_LENGTH);
+        let stop_chars = self
+            .delimiter_chars
+            .as_ref()
+            .map(|s| s.chars().collect())
+            .unwrap_or(Self::DELIMITER_CHARS.iter().cloned().collect());
+        let force = self
+            .force
+            .as_ref()
+            .map(|s| s.chars().collect())
             .unwrap_or_default();
-        let parentheses = parentheses.unwrap_or(Self::PARENTHESES.iter().cloned().collect());
-        // reverse pair of parentheses for reverse iteration
-        let rev_parentheses = parentheses
+        let parenthese_pairs: HashMap<char, char> = self
+            .parenthese_pairs
+            .as_ref()
+            .map(|s| {
+                let pairs: Vec<(char, char)> = s
+                    .split(',')
+                    .flat_map(|s| {
+                        let mut chars = s.chars();
+                        Some((chars.next()?, chars.next()?)) // ignore single char
+                    })
+                    .collect();
+                pairs.into_iter().collect()
+            })
+            .unwrap_or(Self::PARENTHESE_PAIRS.iter().cloned().collect());
+        let rev_parentheses = parenthese_pairs
             .iter()
             .map(|(a, b)| (*b, *a)) // iterate reverse
             .collect::<HashMap<char, char>>();
-        SentenceSplitter {
+
+        Ok(SentenceSplitter {
             max_buf_length,
-            stop_chars,
+            delemeters: stop_chars,
             force,
-            parentheses,
+            parenthese_pairs,
             rev_parentheses,
-        }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct SentenceSplitter {
+    max_buf_length: usize,
+    delemeters: HashSet<char>,
+    force: HashSet<char>,
+    parenthese_pairs: HashMap<char, char>,
+    rev_parentheses: HashMap<char, char>,
+}
+
+impl SentenceSplitter {
+    pub fn new_by_env() -> Result<Self> {
+        let creator = SentenceSplitterCreator::new_by_env()?;
+        creator.create()
     }
 
     pub fn split(&self, text: String) -> Vec<String> {
@@ -60,7 +107,7 @@ impl SentenceSplitter {
         for c in text.chars() {
             buf.push(c);
 
-            if let Some(t) = self.parentheses.get(&c) {
+            if let Some(t) = self.parenthese_pairs.get(&c) {
                 waiting_stack.push(t);
             } else if let Some(d) = waiting_stack.last() {
                 if c == **d {
@@ -70,7 +117,7 @@ impl SentenceSplitter {
                     buf = Vec::with_capacity(self.max_buf_length);
                     waiting_stack.clear();
                 }
-            } else if self.stop_chars.contains(&c) && !buf.is_empty() {
+            } else if self.delemeters.contains(&c) {
                 sentences.push(buf.into_iter().collect());
                 buf = Vec::with_capacity(self.max_buf_length);
             }
@@ -87,6 +134,7 @@ impl SentenceSplitter {
         sentences
     }
 
+    //
     // XXX 最初の文がmaxより長い場合逆に切りつめられる。。。
     // (!!などの連続は扱いやすそうなのでどうにかならないか考える)
     pub fn split_r(&self, text: String) -> Vec<String> {
@@ -106,7 +154,7 @@ impl SentenceSplitter {
                     buf = VecDeque::with_capacity(self.max_buf_length);
                     waiting_stack.clear();
                 }
-            } else if self.stop_chars.contains(&c) && !buf.is_empty() {
+            } else if self.delemeters.contains(&c) && !buf.is_empty() {
                 sentences.push_front(buf.into_iter().collect());
                 buf = VecDeque::with_capacity(self.max_buf_length);
             }
@@ -148,19 +196,82 @@ impl SentenceSplitter {
 mod tests {
     use super::*;
 
+    // create test for SentenceSplitterConfig
     #[test]
-    fn test_split() {
-        let splitter = SentenceSplitter::new(None, None, None, None);
-        let text = "これはテストです。".to_string();
-        let sentences = splitter.split(text);
-        assert_eq!(sentences, vec!["これはテストです。".to_string()]);
+    fn test_to_sentence_splitter() {
+        let creator = SentenceSplitterCreator {
+            max_buf_length: Some(100),
+            delimiter_chars: Some("。,.．\n".to_string()),
+            force: Some("".to_string()),
+            parenthese_pairs: Some("「」,『』,(".to_string()),
+        };
+        let splitter = creator.create().unwrap();
+        assert_eq!(splitter.max_buf_length, 100);
+        assert_eq!(
+            splitter.delemeters,
+            HashSet::from_iter(vec!['。', ',', '.', '．', '\n'])
+        );
+        assert_eq!(splitter.force, HashSet::from_iter(Vec::new()));
+        assert_eq!(
+            splitter.parenthese_pairs,
+            vec![('「', '」'), ('『', '』')]
+                .into_iter()
+                .collect::<HashMap<_, _>>()
+        );
+        assert_eq!(
+            splitter.rev_parentheses,
+            vec![('」', '「'), ('』', '『')].into_iter().collect()
+        );
+    }
+    #[test]
+    fn test_to_sentence_splitter_default() {
+        let creator = SentenceSplitterCreator {
+            max_buf_length: None,
+            delimiter_chars: None,
+            force: None,
+            parenthese_pairs: None,
+        };
+        let splitter = creator.create().unwrap();
+        assert_eq!(splitter.max_buf_length, 512);
+        assert_eq!(
+            splitter.delemeters,
+            SentenceSplitterCreator::DELIMITER_CHARS
+                .iter()
+                .cloned()
+                .collect()
+        );
+        assert_eq!(splitter.force, HashSet::new());
+        assert_eq!(
+            splitter.parenthese_pairs,
+            SentenceSplitterCreator::PARENTHESE_PAIRS
+                .iter()
+                .cloned()
+                .collect()
+        );
     }
 
     #[test]
-    fn test_split_with_stop_chars() {
-        let mut stop_chars = HashSet::new();
-        stop_chars.insert('。');
-        let splitter = SentenceSplitter::new(None, Some(stop_chars), None, None);
+    fn test_split() {
+        let splitter = SentenceSplitterCreator::new(None, None, None, None)
+            .create()
+            .unwrap();
+        let text = "これはテストです。あれはテストではありません。".to_string();
+        let sentences = splitter.split(text);
+        assert_eq!(
+            sentences,
+            vec![
+                "これはテストです。".to_string(),
+                "あれはテストではありません。".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_split_with_single() {
+        let stop_chars = "。";
+        let splitter = SentenceSplitterCreator::new(None, Some(stop_chars.to_string()), None, None)
+            .create()
+            .unwrap();
         let text = "これはテストです。".to_string();
         let sentences = splitter.split(text);
         assert_eq!(sentences, vec!["これはテストです。".to_string()]);
@@ -175,21 +286,45 @@ mod tests {
     }
     #[test]
     fn test_split_with_force() {
-        let mut force = HashSet::new();
-        force.insert('テ');
-        let splitter = SentenceSplitter::new(None, None, Some(force), None);
-        let text = "これはテストです。".to_string();
+        let force = "テ".to_string();
+        let splitter = SentenceSplitterCreator::new(None, None, Some(force), None)
+            .create()
+            .unwrap();
+        assert_eq!(splitter.force, HashSet::from_iter(vec!['テ']));
+        let text = "「これはテストです。」".to_string();
         let sentences = splitter.split(text);
+        // XXX forget parentheses after split.(divide last 」)
         assert_eq!(
             sentences,
-            vec!["これはテ".to_string(), "ストです。".to_string()]
+            vec![
+                "「これはテ".to_string(),
+                "ストです。".to_string(),
+                "」".to_string()
+            ]
+        );
+    }
+    #[test]
+    fn test_split_with_force2() {
+        let force = " ".to_string();
+        let splitter =
+            SentenceSplitterCreator::new(None, None, Some(force), Some("()".to_string()))
+                .create()
+                .unwrap();
+        assert_eq!(splitter.force, HashSet::from_iter(vec![' ']));
+        let text = "(This is a pen.)".to_string();
+        let sentences = splitter.split(text);
+        // XXX split at only first char
+        assert_eq!(
+            sentences,
+            vec!["(This ".to_string(), "is a pen.)".to_string(),]
         );
     }
     #[test]
     fn test_split_with_parentheses() {
-        let mut parentheses = HashMap::new();
-        parentheses.insert('(', ')');
-        let splitter = SentenceSplitter::new(None, None, None, Some(parentheses));
+        let parentheses = "()".to_string();
+        let splitter = SentenceSplitterCreator::new(None, None, None, Some(parentheses))
+            .create()
+            .unwrap();
         let text = "これはテスト(です。ああ)です。".to_string();
         let sentences = splitter.split(text);
         assert_eq!(
@@ -199,7 +334,9 @@ mod tests {
     }
     #[test]
     fn test_split_with_max_buf_length() {
-        let splitter = SentenceSplitter::new(Some(2), None, None, None);
+        let splitter = SentenceSplitterCreator::new(Some(2), None, None, None)
+            .create()
+            .unwrap();
         let text = "これはテストです。".to_string();
         let sentences = splitter.split(text);
         assert_eq!(sentences, vec!["これ", "はテ", "スト", "です", "。"]);
@@ -230,25 +367,16 @@ mod tests {
         ];
         assert_eq!(SentenceSplitter::split_with_div_regex(&r, text), expected);
 
-        let text = format!("<|20.00|> abcdefg<|29.80|>");
+        let text = "<|20.00|> abcdefg<|29.80|>";
         let expected = vec!["<|20.00|>", " abcdefg", "<|29.80|>"];
-        assert_eq!(
-            SentenceSplitter::split_with_div_regex(&r, text.as_str()),
-            expected
-        );
+        assert_eq!(SentenceSplitter::split_with_div_regex(&r, text), expected);
 
-        let text = format!("<text<");
+        let text = "<text<";
         let expected = vec!["<text<"];
-        assert_eq!(
-            SentenceSplitter::split_with_div_regex(&r, text.as_str()),
-            expected
-        );
+        assert_eq!(SentenceSplitter::split_with_div_regex(&r, text), expected);
 
-        let text = format!("<|00.80|>");
+        let text = "<|00.80|>";
         let expected = vec!["<|00.80|>"];
-        assert_eq!(
-            SentenceSplitter::split_with_div_regex(&r, text.as_str()),
-            expected
-        );
+        assert_eq!(SentenceSplitter::split_with_div_regex(&r, text), expected);
     }
 }
