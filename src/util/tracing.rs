@@ -1,30 +1,22 @@
+use crate::util::id_generator::iputil;
 use anyhow::{Context, Result};
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{BatchConfig, Tracer};
-use serde::Deserialize;
-use std::env;
-use std::fs::File;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::time::Duration;
-use tracing::Subscriber;
-// use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::fmt::Layer;
-use tracing_subscriber::layer::SubscriberExt;
-// use opentelemetry::sdk::export::trace::stdout;
-// use opentelemetry::{
-//     propagation::Extractor,
-//     trace::{Span, Tracer},
-//     KeyValue,
-// };
-use crate::util::id_generator::iputil;
 use opentelemetry_semantic_conventions::{
     resource::{DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SERVICE_VERSION},
     SCHEMA_URL,
 };
+use serde::Deserialize;
+use std::env;
+use std::fs::File;
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::time::Duration;
+use tracing::Subscriber;
+use tracing_subscriber::fmt::Layer;
+use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{filter, prelude::*};
 
 const APP_SERVICE_NAME: &str = "jobworkerp-rs";
@@ -172,7 +164,6 @@ async fn otlp_tracer_from_env() -> Result<Option<Tracer>> {
         }
         Err(_e) => {
             // not specified
-            // println!("failed to load otlp config from env: {:?}", _e);
             Ok(None)
         }
     }
@@ -189,164 +180,64 @@ pub async fn setup_layer_from_logging_config(
         .as_ref()
         .map(|d| PathBuf::from_str(d).context("Invalid log file directory"))
         .unwrap_or(env::current_dir().map_err(|e| e.into()))?;
-    let default_name = "out.log";
-    let file_name = conf.file_name.as_deref().unwrap_or(default_name);
-    let file = File::create(dir.join(file_name)).context(format!(
-        "create log file to {:?}:",
-        dir.join(file_name).as_os_str()
-    ))?;
-    let layer = Layer::new()
-        .with_writer(file.with_max_level(lv))
-        .with_ansi(false);
+
+    let create_file_fn = || {
+        if let Some(file_name) = conf.file_name.as_deref() {
+            std::fs::create_dir_all(&dir).expect("create log file directory:");
+            Some(File::create(dir.join(file_name)).unwrap_or_else(|_| {
+                panic!("create log file to {:?}:", dir.join(file_name).as_os_str())
+            }))
+        } else {
+            None
+        }
+    };
     let remote_tracer = match jaeger_tracer_from_env().or_else(|_| zipkin_tracer_from_env()) {
         Ok(tr) => Some(tr),
         Err(_) => otlp_tracer_from_env().await?,
     };
-    let subscriber: Box<dyn Subscriber + Send + Sync> = if conf.use_json {
-        let s = tracing_subscriber::registry()
-            .with(layer.json())
-            .with(filter);
-        // pretty format for stdout (XXX fixed)
-        if conf.use_stdout {
-            if let Some(tracer) = remote_tracer {
-                // for type match
-                Box::new(
-                    s.with(tracing_opentelemetry::layer().with_tracer(tracer))
-                        .with(tracing_subscriber::fmt::layer().json()),
-                )
+
+    let subscriber = Box::new(
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(match create_file_fn() {
+                // for json case
+                Some(f) if conf.use_json => Some(
+                    Layer::new()
+                        .with_writer(f.with_max_level(lv))
+                        .with_ansi(false)
+                        .json(),
+                ),
+                _ => None,
+            })
+            .with(match create_file_fn() {
+                // for not json case
+                Some(f) if !conf.use_json => Some(
+                    Layer::new()
+                        .with_writer(f.with_max_level(lv))
+                        .with_ansi(false),
+                ),
+                _ => None,
+            })
+            .with(remote_tracer.map(|t| tracing_opentelemetry::layer().with_tracer(t)))
+            .with(if !conf.use_json && conf.use_stdout {
+                Some(tracing_subscriber::fmt::layer().pretty())
             } else {
-                Box::new(s.with(tracing_subscriber::fmt::layer().json()))
-            }
-        } else {
-            Box::new(s)
-        }
-    } else if conf.use_stdout {
-        // for debug
-        if let Some(tracer) = remote_tracer {
-            Box::new(
-                tracing_subscriber::registry()
-                    .with(layer)
-                    .with(filter)
-                    .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                    .with(tracing_subscriber::fmt::layer().pretty()),
-            )
-        } else {
-            Box::new(
-                tracing_subscriber::registry()
-                    .with(layer)
-                    .with(filter)
-                    .with(tracing_subscriber::fmt::layer().pretty()),
-            )
-        }
-    } else {
-        Box::new(tracing_subscriber::registry().with(layer).with(filter))
-    };
-    // // TODO match type
-    // if let Some(tracer) = jaeger_tracer_from_env()? {
-    //     subscriber = Box::new(subscriber.with(OpenTelemetryLayer::new(tracer)));
-    // }
+                None
+            })
+            .with(if conf.use_json && conf.use_stdout {
+                Some(tracing_subscriber::fmt::layer().json())
+            } else {
+                None
+            }),
+    );
+    //
     // if conf.use_tokio_console {
     // subscriber = Box::new(subscriber.with(console_layer));
     // }
     Ok(subscriber)
 }
 
-// use tonic::Request;
-// struct MetadataMap<'a>(&'a tonic::metadata::MetadataMap);
-
-// impl<'a> Extractor for MetadataMap<'a> {
-//     /// Get a value for a key from the MetadataMap.  If the value can't be converted to &str, returns None
-//     fn get(&self, key: &str) -> Option<&str> {
-//         self.0.get(key).and_then(|metadata| metadata.to_str().ok())
-//     }
-
-//     /// Collect all the keys from the MetadataMap.
-//     fn keys(&self) -> Vec<&str> {
-//         self.0
-//             .keys()
-//             .map(|key| match key {
-//                 tonic::metadata::KeyRef::Ascii(v) => v.as_str(),
-//                 tonic::metadata::KeyRef::Binary(v) => v.as_str(),
-//             })
-//             .collect::<Vec<_>>()
-//     }
-// }
-
-// pub trait Tracing {
-//     fn trace_request<'a, T: Debug>(
-//         name: &'static str,
-//         span_name: &'static str,
-//         request: &'a Request<T>,
-//     ) -> global::BoxedSpan {
-//         let parent_cx =
-//             global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
-//         let mut span = global::tracer(name).start_with_context(span_name, &parent_cx);
-//         span.set_attribute(KeyValue::new("request", format!("{:?}", request)));
-//         span
-//     }
-// }
-// for stdout logging
+// for simple stdout logging
 pub fn tracing_init_test(level: tracing::Level) {
     tracing_subscriber::fmt().with_max_level(level).init();
-}
-
-// for jeager logging
-pub fn tracing_jaeger_init(addr: &SocketAddr, name: &str, level: String) -> Result<()> {
-    global::set_text_map_propagator(TraceContextPropagator::new());
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
-    let tracer = opentelemetry_jaeger::new_agent_pipeline()
-        .with_service_name(name)
-        .with_endpoint(addr.to_string())
-        .install_simple()?;
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(level))
-        .with(tracing_opentelemetry::layer().with_tracer(tracer))
-        .with(stdout_log)
-        .try_init()
-        .map_err(|e| e.into())
-}
-pub fn tracing_jaeger_init_batch(addr: &SocketAddr, name: &str) -> Result<()> {
-    global::set_text_map_propagator(TraceContextPropagator::new());
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
-    let tracer = opentelemetry_jaeger::new_agent_pipeline()
-        .with_service_name(name)
-        .with_endpoint(addr.to_string())
-        .install_batch(opentelemetry_sdk::runtime::Tokio)?;
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("INFO"))
-        .with(tracing_opentelemetry::layer().with_tracer(tracer))
-        .with(stdout_log)
-        .try_init()
-        .map_err(|e| e.into())
-}
-
-// for zipkin logging
-pub fn tracing_zipkin_init(addr: impl Into<String>, name: &str) -> Result<()> {
-    global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
-    let tracer = opentelemetry_zipkin::new_pipeline()
-        .with_service_name(name)
-        .with_collector_endpoint(addr)
-        .install_simple()?;
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("INFO"))
-        .with(stdout_log)
-        .with(tracing_opentelemetry::layer().with_tracer(tracer))
-        .try_init()
-        .map_err(|e| e.into())
-}
-// for zipkin logging
-pub fn tracing_zipkin_init_batch(addr: impl Into<String>, name: &str) -> Result<()> {
-    global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
-    let tracer = opentelemetry_zipkin::new_pipeline()
-        .with_service_name(name)
-        .with_collector_endpoint(addr)
-        .install_batch(opentelemetry_sdk::runtime::Tokio)?;
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("INFO"))
-        .with(stdout_log)
-        .with(tracing_opentelemetry::layer().with_tracer(tracer))
-        .try_init()
-        .map_err(|e| e.into())
 }
