@@ -187,11 +187,14 @@ pub async fn setup_layer_from_logging_config(
     let dir = conf
         .file_dir
         .as_ref()
-        .map(|d| PathBuf::from_str(d).context("invalid file_dir"))
+        .map(|d| PathBuf::from_str(d).context("Invalid log file directory"))
         .unwrap_or(env::current_dir().map_err(|e| e.into()))?;
     let default_name = "out.log";
     let file_name = conf.file_name.as_deref().unwrap_or(default_name);
-    let file = File::create(dir.join(file_name))?;
+    let file = File::create(dir.join(file_name)).context(format!(
+        "create log file to {:?}:",
+        dir.join(file_name).as_os_str()
+    ))?;
     let layer = Layer::new()
         .with_writer(file.with_max_level(lv))
         .with_ansi(false);
