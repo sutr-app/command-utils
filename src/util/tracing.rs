@@ -62,6 +62,11 @@ pub async fn init_from_env_and_filename(
     })
     .await
 }
+
+pub fn shutdown_tracer_provider() {
+    opentelemetry::global::shutdown_tracer_provider();
+}
+
 pub fn create_filename_with_ip_postfix(
     prefix: impl Into<String>,
     ext: impl Into<String>,
