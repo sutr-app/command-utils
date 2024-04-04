@@ -261,7 +261,7 @@ pub mod cow {
 pub mod datetime {
     use super::result::FlatMap;
     use anyhow::{anyhow, Result};
-    use chrono::{DateTime, FixedOffset, LocalResult, NaiveDateTime, TimeZone, Utc};
+    use chrono::{DateTime, FixedOffset, LocalResult, TimeZone, Utc};
     use once_cell::sync::Lazy;
 
     pub static OFFSET_SEC: Lazy<i32> = Lazy::<i32>::new(|| {
@@ -276,17 +276,15 @@ pub mod datetime {
         Lazy::<FixedOffset>::new(|| FixedOffset::east_opt(*OFFSET_SEC).unwrap());
 
     pub fn from_epoch_sec(epoch_sec: i64) -> DateTime<FixedOffset> {
-        let naive_date_time = NaiveDateTime::from_timestamp_millis(epoch_sec * 1000).unwrap();
-        DateTime::<FixedOffset>::from_naive_utc_and_offset(naive_date_time, *TZ_OFFSET)
+        let utc_date_time = DateTime::from_timestamp_millis(epoch_sec * 1000).unwrap();
+        utc_date_time.with_timezone(&*TZ_OFFSET)
     }
 
     // XXX +9:00 +9:00 from epoch_milli
     pub fn from_epoch_milli(epoch_milli: i64) -> DateTime<FixedOffset> {
-        DateTime::<Utc>::from_naive_utc_and_offset(
-            NaiveDateTime::from_timestamp_millis(epoch_milli).unwrap(),
-            Utc,
-        )
-        .with_timezone(&*TZ_OFFSET)
+        DateTime::from_timestamp_millis(epoch_milli)
+            .unwrap()
+            .with_timezone(&*TZ_OFFSET)
     }
 
     pub fn now() -> DateTime<FixedOffset> {
