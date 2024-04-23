@@ -4,10 +4,13 @@ use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{BatchConfig, Tracer};
+use opentelemetry_sdk::{runtime, trace as sdktrace, Resource};
+
 use opentelemetry_semantic_conventions::{
     resource::{DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SERVICE_VERSION},
     SCHEMA_URL,
 };
+
 use serde::Deserialize;
 use std::env;
 use std::fs::File;
@@ -98,12 +101,22 @@ pub async fn tracing_init_from_env() -> Result<()> {
 fn jaeger_tracer_from_env() -> Result<Tracer> {
     let addr = env::var("JAEGER_ADDR").context("jaeger addr")?;
     println!("jaeger addr: {:?}", addr);
-    opentelemetry_jaeger::new_agent_pipeline()
-        .with_service_name(APP_SERVICE_NAME)
-        .with_endpoint(addr.to_string())
-        .install_batch(opentelemetry_sdk::runtime::Tokio)
+    opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_endpoint(addr.to_string()),
+        )
+        .with_trace_config(
+            sdktrace::config().with_resource(Resource::new(vec![KeyValue::new(
+                SERVICE_NAME,
+                APP_SERVICE_NAME,
+            )])),
+        )
+        .install_batch(runtime::Tokio)
         .map_err(|e| {
-            println!("failed to install zipkin tracer: {:?}", e);
+            println!("failed to install jaeger tracer: {:?}", e);
             e.into()
         })
 }
