@@ -240,6 +240,21 @@ pub mod cow {
         }
     }
 }
+pub mod string {
+    pub trait ToOption<T> {
+        fn to_option(self) -> Option<T>;
+    }
+    impl ToOption<String> for String {
+        #[inline]
+        fn to_option(self) -> Option<String> {
+            if self.is_empty() {
+                None
+            } else {
+                Some(self)
+            }
+        }
+    }
+}
 
 // // https://stackoverflow.com/questions/65751826/how-can-i-lazy-initialize-fill-an-option-with-a-fallible-initializer
 // trait TryGetOrInsert<T> {
