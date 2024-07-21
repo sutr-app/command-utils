@@ -1,3 +1,4 @@
+pub mod encoding;
 pub mod id_generator;
 pub mod shutdown;
 pub mod tracing;

@@ -109,7 +109,7 @@ fn jaeger_tracer_from_env() -> Result<Tracer> {
                 .with_endpoint(addr.to_string()),
         )
         .with_trace_config(
-            sdktrace::config().with_resource(Resource::new(vec![KeyValue::new(
+            sdktrace::Config::default().with_resource(Resource::new(vec![KeyValue::new(
                 SERVICE_NAME,
                 APP_SERVICE_NAME,
             )])),
