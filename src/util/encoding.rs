@@ -21,7 +21,7 @@ where
 
 pub fn encode_to_utf8_raw(input: &[u8]) -> Result<String> {
     // detect charset of the file
-    let result = chardet::detect(&input);
+    let result = chardet::detect(input);
     // result.0 Encode
     // result.1 Confidence
     // result.2 Language
@@ -29,7 +29,7 @@ pub fn encode_to_utf8_raw(input: &[u8]) -> Result<String> {
     // decode file into utf-8
     let coder = encoding_from_whatwg_label(chardet::charset2encoding(&result.0));
     if let Some(c) = coder {
-        c.decode(&input, DecoderTrap::Ignore)
+        c.decode(input, DecoderTrap::Ignore)
             .map_err(|e| anyhow!("Error:{:?}", e))
     } else {
         Err(anyhow!("cannot find character encodings: {:?}", &result))
