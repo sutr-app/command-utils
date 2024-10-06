@@ -15,13 +15,12 @@ envy = { version = "0.4" }
 flate2 = { version = "1.0", features = ["miniz_oxide"] }
 futures = { version = "0.3" }
 once_cell = { version = "1" }
-opentelemetry = { version = "0.24" }
-opentelemetry_sdk = { version = "0.24", features = ["rt-tokio"] }
-opentelemetry-jaeger = { version = "0.22", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.17", features = ["metrics"] }
-opentelemetry-semantic-conventions = { version = "0.16" }
-opentelemetry-stdout = { version = "0.5" }
-opentelemetry-zipkin = { version = "0.22", default-features = false }
+opentelemetry = { version = "0.25" }
+opentelemetry_sdk = { version = "0.25", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.25", features = ["metrics"] }
+opentelemetry-semantic-conventions = { version = "0.25" }
+opentelemetry-stdout = { version = "0.25" }
+opentelemetry-zipkin = { version = "0.25", default-features = false }
 pnet = { version = "0.35" }
 rand = { version = "0.8" }
 regex = { version = "1" }
@@ -36,7 +35,7 @@ tokio = { version = "1", features = [
     "parking_lot",
 ] }
 tracing = { version = "0.1" }
-tracing-opentelemetry = { version = "0.25" }
+tracing-opentelemetry = { version = "0.26" }
 tracing-subscriber = { version = "0.3", features = [
     "tracing-log",
     "env-filter",

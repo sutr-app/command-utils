@@ -7,7 +7,7 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{BatchConfig, Tracer};
 use opentelemetry_sdk::{runtime, trace as sdktrace, Resource};
 use opentelemetry_semantic_conventions::{
-    resource::{DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SERVICE_VERSION},
+    resource::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_NAME, SERVICE_VERSION},
     SCHEMA_URL,
 };
 use serde::Deserialize;
@@ -140,7 +140,7 @@ fn resource() -> opentelemetry_sdk::Resource {
         [
             KeyValue::new(SERVICE_NAME, APP_SERVICE_NAME),
             KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-            KeyValue::new(DEPLOYMENT_ENVIRONMENT, "development"), // TODO from config
+            KeyValue::new(DEPLOYMENT_ENVIRONMENT_NAME, "development"), // TODO from config
         ],
         SCHEMA_URL,
     )
