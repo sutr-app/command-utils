@@ -191,6 +191,21 @@ impl SentenceSplitter {
         divided
     }
 }
+pub struct TextUtil {}
+
+impl TextUtil {
+    pub fn snake_to_camel(s: &str) -> String {
+        s.split('_')
+            .map(|w| {
+                let mut c = w.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().chain(c).collect(),
+                }
+            })
+            .collect()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -378,5 +393,14 @@ mod tests {
         let text = "<|00.80|>";
         let expected = vec!["<|00.80|>"];
         assert_eq!(SentenceSplitter::split_with_div_regex(&r, text), expected);
+    }
+    #[test]
+    fn test_snake_to_camel() {
+        assert_eq!(TextUtil::snake_to_camel("snake_to_camel"), "SnakeToCamel");
+        assert_eq!(TextUtil::snake_to_camel("snake_to_camel_"), "SnakeToCamel");
+        assert_eq!(TextUtil::snake_to_camel("_snake_to_camel"), "SnakeToCamel");
+        assert_eq!(TextUtil::snake_to_camel("snakeToCamel"), "SnakeToCamel");
+        assert_eq!(TextUtil::snake_to_camel("snake?"), "Snake?");
+        assert_eq!(TextUtil::snake_to_camel("SNAKE_TO_CAMEL"), "SNAKETOCAMEL"); // XXX
     }
 }
