@@ -21,6 +21,8 @@ use tracing_subscriber::fmt::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{filter, prelude::*};
 
+use super::result::ToOption;
+
 const APP_SERVICE_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[derive(Deserialize, Debug)]
@@ -98,7 +100,7 @@ pub async fn tracing_init_from_env() -> Result<()> {
         }
     }
 }
-// TODO match type
+// deprecated
 fn jaeger_tonic_tracer_from_env(app_service_name: String) -> Result<Tracer> {
     let addr = env::var("JAEGER_ADDR").context("jaeger addr")?;
     println!("jaeger addr: {:?}", addr);
@@ -121,9 +123,9 @@ fn jaeger_tonic_tracer_from_env(app_service_name: String) -> Result<Tracer> {
 }
 
 fn zipkin_tracer_from_env(app_service_name: String) -> Result<Tracer> {
-    global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
     let addr = env::var("ZIPKIN_ADDR").context("zipkin addr")?;
     println!("zipkin addr: {:?}", &addr);
+    global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
     opentelemetry_zipkin::new_pipeline()
         .with_service_name(app_service_name)
         .with_collector_endpoint(addr)
@@ -146,7 +148,6 @@ fn resource() -> opentelemetry_sdk::Resource {
     )
 }
 async fn otlp_tracer_from_env(app_service_name: String) -> Result<Option<Tracer>> {
-    global::set_text_map_propagator(TraceContextPropagator::new());
     let addr: Result<String> = env::var("OTLP_ADDR").context("otlp addr");
     match addr {
         Ok(addr) => {
@@ -172,7 +173,10 @@ async fn otlp_tracer_from_env(app_service_name: String) -> Result<Option<Tracer>
                 )
                 .install_batch(opentelemetry_sdk::runtime::Tokio)
             {
-                Ok(tr) => Ok(Some(tr.tracer(app_service_name.clone()))),
+                Ok(tr) => {
+                    global::set_text_map_propagator(TraceContextPropagator::new());
+                    Ok(Some(tr.tracer(app_service_name.clone())))
+                }
                 Err(e) => {
                     println!("failed to install otlp tracer: {:?}", e);
                     Err(e.into())
@@ -212,11 +216,12 @@ pub async fn setup_layer_from_logging_config(
         .app_name
         .clone()
         .unwrap_or_else(|| APP_SERVICE_NAME.to_string());
-    let remote_tracer = match jaeger_tonic_tracer_from_env(app_service_name.clone())
-        .or_else(|_| zipkin_tracer_from_env(app_service_name.clone()))
-    {
-        Ok(tr) => Some(tr),
-        Err(_) => otlp_tracer_from_env(app_service_name).await?,
+    let remote_tracer = match otlp_tracer_from_env(app_service_name.clone()).await {
+        Ok(Some(tr)) => Some(tr),
+        Ok(None) => zipkin_tracer_from_env(app_service_name.clone())
+            .or_else(|_| jaeger_tonic_tracer_from_env(app_service_name))
+            .to_option(),
+        Err(_) => None,
     };
 
     let subscriber = Box::new(
