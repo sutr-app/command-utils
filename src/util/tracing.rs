@@ -169,7 +169,7 @@ async fn otlp_tracer_from_env(app_service_name: String) -> Result<Option<Tracer>
                     opentelemetry_otlp::new_exporter()
                         .tonic()
                         .with_endpoint(&addr)
-                        .with_timeout(Duration::from_secs(3)),
+                        .with_timeout(Duration::from_secs(10)),
                 )
                 .install_batch(opentelemetry_sdk::runtime::Tokio)
             {
