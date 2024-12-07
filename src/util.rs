@@ -114,10 +114,10 @@ pub mod result {
         fn flat_map_async(self, op: F) -> BoxFuture<'static, Result<U, E>>;
     }
 
-    impl<'a, T, U, E, F> AsyncFlatMap<T, U, E, F> for Result<T, E>
+    impl<T, U, E, F> AsyncFlatMap<T, U, E, F> for Result<T, E>
     where
         T: Send + 'static,
-        U: Send + 'a,
+        U: Send,
         E: Send + 'static,
         F: FnOnce(T) -> BoxFuture<'static, Result<U, E>> + Send + 'static,
     {
@@ -203,10 +203,10 @@ pub mod option {
         fn flat_map_async(self, op: F) -> BoxFuture<'static, Option<U>>;
     }
 
-    impl<'a, T, U, E, F> AsyncFlatMap<T, U, E, F> for Option<T>
+    impl<T, U, E, F> AsyncFlatMap<T, U, E, F> for Option<T>
     where
         T: Send + 'static,
-        U: Send + 'a,
+        U: Send,
         E: Send + 'static,
         F: FnOnce(T) -> BoxFuture<'static, Option<U>> + Send + 'static,
     {
@@ -231,7 +231,7 @@ pub mod cow {
     pub trait ToValue<T: Clone> {
         fn to_value(&self) -> &T;
     }
-    impl<'a, T: Clone> ToValue<T> for Cow<'a, T> {
+    impl<T: Clone> ToValue<T> for Cow<'_, T> {
         fn to_value(&self) -> &T {
             match self {
                 Cow::Borrowed(b) => b.to_owned(),
