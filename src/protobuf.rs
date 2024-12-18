@@ -148,19 +148,67 @@ impl ProtobufDescriptor {
         message
             .fields()
             .map(|(field, value)| {
-                if let Some(m) = value.as_message() {
-                    Self::dynamic_message_to_string(m, byte_to_string)
-                } else if byte_to_string {
-                    if let Some(value) = value.as_bytes() {
-                        format!("{}: {}\n", field.name(), String::from_utf8_lossy(value))
-                    } else {
-                        format!("{}: {:?}\n", field.name(), value)
-                    }
-                } else {
-                    format!("{}: {:?}\n", field.name(), value)
-                }
+                format!(
+                    "{}: {}\n",
+                    field.name(),
+                    Self::value_to_string(value, byte_to_string)
+                )
             })
             .join("")
+    }
+    fn value_to_string(v: &prost_reflect::Value, byte_to_string: bool) -> String {
+        match v {
+            prost_reflect::Value::Bool(v) => format!("{}", v),
+            prost_reflect::Value::I32(v) => format!("{}", v),
+            prost_reflect::Value::I64(v) => format!("{}", v),
+            prost_reflect::Value::U32(v) => format!("{}", v),
+            prost_reflect::Value::U64(v) => format!("{}", v),
+            prost_reflect::Value::F32(v) => format!("{}", v),
+            prost_reflect::Value::F64(v) => format!("{}", v),
+            prost_reflect::Value::String(v) => format!("{}", v),
+            prost_reflect::Value::Bytes(v) => {
+                if byte_to_string {
+                    format!("{}", String::from_utf8_lossy(v))
+                } else {
+                    format!("{:x?}", v)
+                }
+            }
+            prost_reflect::Value::EnumNumber(v) => format!("{:?}[enum]", v),
+            prost_reflect::Value::Message(v) => {
+                let message_str = Self::dynamic_message_to_string(v, byte_to_string);
+                format!("{}", message_str)
+            }
+            prost_reflect::Value::List(v) => {
+                let list_str = v
+                    .iter()
+                    .map(|v| Self::value_to_string(v, byte_to_string))
+                    .join(", ");
+                format!("[{}]", list_str)
+            }
+            prost_reflect::Value::Map(hash_map) => {
+                let map_str = hash_map
+                    .iter()
+                    .map(|(k, v)| {
+                        format!(
+                            "{}: {}",
+                            Self::map_key_to_string(k),
+                            Self::value_to_string(v, byte_to_string)
+                        )
+                    })
+                    .join(", ");
+                format!("{{{}}}", map_str)
+            }
+        }
+    }
+    fn map_key_to_string(k: &prost_reflect::MapKey) -> String {
+        match k {
+            prost_reflect::MapKey::Bool(v) => format!("{}", v),
+            prost_reflect::MapKey::I32(v) => format!("{}", v),
+            prost_reflect::MapKey::I64(v) => format!("{}", v),
+            prost_reflect::MapKey::U32(v) => format!("{}", v),
+            prost_reflect::MapKey::U64(v) => format!("{}", v),
+            prost_reflect::MapKey::String(v) => format!("{}", v),
+        }
     }
 }
 
@@ -259,6 +307,7 @@ message TestArg {
             int64 id = 1;
             string name = 2;
             string description = 3;
+            repeated string tags = 4;
         }
         "#;
         let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
@@ -270,7 +319,8 @@ message TestArg {
         {
             "id": 1,
             "name": "test name",
-            "description": "test desc: あいうえお"
+            "description": "test desc:\n あいうえお",
+            "tags": ["tag1", "tag2"]
         }
         "#;
         let message = descriptor.get_message_by_name_from_json("jobworkerp.data.Job", json)?;
@@ -290,8 +340,13 @@ message TestArg {
                 .unwrap()
                 .as_str()
                 .unwrap(),
-            "test desc: あいうえお"
+            "test desc:\n あいうえお"
         );
+        let tags_field = message.get_field_by_name("tags").unwrap();
+        let tags_list = tags_field.as_list().unwrap();
+        let tags: Vec<&str> = tags_list.iter().flat_map(|v| v.as_str()).collect_vec();
+        assert_eq!(tags, vec!["tag1", "tag2"]);
+
         ProtobufDescriptor::print_dynamic_message(&message, true);
 
         let bytes = message.encode_to_vec();
@@ -307,7 +362,7 @@ message TestArg {
         assert_eq!(message, mes);
         assert_eq!(
             ProtobufDescriptor::dynamic_message_to_string(&message, false),
-            "id: I64(1)\nname: String(\"test name\")\ndescription: String(\"test desc: あいうえお\")\n".to_string()
+            "id: 1\nname: test name\ndescription: test desc:\n あいうえお\ntags: [tag1, tag2]\n".to_string()
         );
         Ok(())
     }
