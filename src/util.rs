@@ -199,6 +199,19 @@ pub mod option {
         }
     }
 
+    pub trait ForAll<T, F: FnOnce(T) -> bool> {
+        fn forall(self, f: F) -> bool;
+    }
+    impl<T, F: FnOnce(T) -> bool> ForAll<T, F> for Option<T> {
+        #[inline]
+        fn forall(self, f: F) -> bool {
+            match self {
+                Some(s) => f(s),
+                None => true,
+            }
+        }
+    }
+
     pub trait AsyncFlatMap<T, U, E, F> {
         fn flat_map_async(self, op: F) -> BoxFuture<'static, Option<U>>;
     }
