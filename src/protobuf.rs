@@ -165,7 +165,7 @@ impl ProtobufDescriptor {
             prost_reflect::Value::U64(v) => format!("{}", v),
             prost_reflect::Value::F32(v) => format!("{}", v),
             prost_reflect::Value::F64(v) => format!("{}", v),
-            prost_reflect::Value::String(v) => format!("{}", v),
+            prost_reflect::Value::String(v) => v.to_string(),
             prost_reflect::Value::Bytes(v) => {
                 if byte_to_string {
                     format!("{}", String::from_utf8_lossy(v))
@@ -174,10 +174,7 @@ impl ProtobufDescriptor {
                 }
             }
             prost_reflect::Value::EnumNumber(v) => format!("{:?}[enum]", v),
-            prost_reflect::Value::Message(v) => {
-                let message_str = Self::dynamic_message_to_string(v, byte_to_string);
-                format!("{}", message_str)
-            }
+            prost_reflect::Value::Message(v) => Self::dynamic_message_to_string(v, byte_to_string),
             prost_reflect::Value::List(v) => {
                 let list_str = v
                     .iter()
@@ -207,7 +204,7 @@ impl ProtobufDescriptor {
             prost_reflect::MapKey::I64(v) => format!("{}", v),
             prost_reflect::MapKey::U32(v) => format!("{}", v),
             prost_reflect::MapKey::U64(v) => format!("{}", v),
-            prost_reflect::MapKey::String(v) => format!("{}", v),
+            prost_reflect::MapKey::String(v) => v.to_string(),
         }
     }
 }
