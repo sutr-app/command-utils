@@ -362,7 +362,8 @@ message TestArg {
         assert_eq!(message, mes);
         assert_eq!(
             ProtobufDescriptor::dynamic_message_to_string(&message, false),
-            "id: 1\nname: test name\ndescription: test desc:\n あいうえお\ntags: [tag1, tag2]\n".to_string()
+            "id: 1\nname: test name\ndescription: test desc:\n あいうえお\ntags: [tag1, tag2]\n"
+                .to_string()
         );
         Ok(())
     }
