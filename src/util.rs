@@ -1,5 +1,6 @@
 pub mod encoding;
 pub mod id_generator;
+pub mod jq;
 pub mod shutdown;
 pub mod tracing;
 
@@ -297,7 +298,7 @@ pub mod datetime {
         std::env::var("TZ_OFFSET_HOURS")
             .map_err(|e| e.into())
             .flat_map(|s| s.parse::<i32>().map_err(|e| e.into()))
-            .unwrap_or(0)
+            .unwrap_or(9)
             * 3600
     });
 
@@ -309,7 +310,6 @@ pub mod datetime {
         utc_date_time.with_timezone(&*TZ_OFFSET)
     }
 
-    // XXX +9:00 +9:00 from epoch_milli
     pub fn from_epoch_milli(epoch_milli: i64) -> DateTime<FixedOffset> {
         DateTime::from_timestamp_millis(epoch_milli)
             .unwrap()
