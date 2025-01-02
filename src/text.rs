@@ -356,6 +356,15 @@ mod tests {
         let sentences = splitter.split(text);
         assert_eq!(sentences, vec!["これ", "はテ", "スト", "です", "。"]);
     }
+    #[test]
+    fn test_split_with_max_buf_length2() {
+        let splitter = SentenceSplitterCreator::new(Some(5), None, None, None)
+            .create()
+            .unwrap();
+        let text = "こ。れ。は。テストです。".to_string();
+        let sentences = splitter.split(text);
+        assert_eq!(sentences, vec!["こ。", "れ。", "は。", "テストです", "。"]);
+    }
     // XXX now using and testing dividing timed text only
     #[test]
     fn test_split_with_div_regex() {

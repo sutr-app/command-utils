@@ -385,6 +385,7 @@ pub mod datetime {
 }
 pub mod text {
     use super::option::FlatMap;
+    use anyhow::{anyhow, Result};
     use regex::Regex;
 
     // https://stackoverflow.com/a/6041965
@@ -393,6 +394,57 @@ pub mod text {
         let re = Regex::new(URL_REGEX).unwrap();
         re.captures(message)
             .flat_map(|c| c.get(1).map(|s| s.as_str()))
+    }
+    /// 文字列を指定された区切り文字または最大長で分割する
+    ///
+    /// # Arguments
+    /// * `text` - 分割する文字列
+    /// * `max_length` - 各部分の最大長（バイト単位）
+    /// * `delimiters` - 区切り文字（優先順位順）
+    ///
+    /// # Returns
+    /// * `Result<Vec<String>>` - 分割された文字列
+    pub fn split_text(text: &str, max_chars: usize, delimiters: &[&str]) -> Result<Vec<String>> {
+        let mut parts = Vec::new();
+        let mut char_start = 0;
+        let char_count = text.chars().count();
+
+        // 文字位置からバイト位置へのマッピングを作成
+        let char_byte_positions: Vec<usize> =
+            text.char_indices().map(|(byte_pos, _)| byte_pos).collect();
+
+        while char_start < char_count {
+            let char_end = (char_start + max_chars).min(char_count);
+            let byte_start = char_byte_positions[char_start];
+            let byte_end = char_byte_positions
+                .get(char_end)
+                .copied()
+                .unwrap_or(text.len());
+
+            // 区切り文字による分割を試みる
+            let mut split_end = byte_end;
+            if char_end < char_count {
+                let substr = &text[byte_start..byte_end];
+                for delimiter in delimiters {
+                    if let Some(last_pos) = substr.rfind(delimiter) {
+                        split_end = byte_start + last_pos + delimiter.len();
+                        break;
+                    }
+                }
+            }
+
+            // 有効な部分文字列を追加
+            if split_end > byte_start {
+                parts.push(text[byte_start..split_end].to_string());
+            } else {
+                return Err(anyhow!("Invalid text splitting position"));
+            }
+
+            // 次の開始位置を設定
+            char_start = text[..split_end].chars().count();
+        }
+
+        Ok(parts)
     }
 
     // create test for extract_url_simple
@@ -422,6 +474,47 @@ pub mod text {
             assert_eq!(extract_url_simple(&mes), Some(url));
             let mes = format!("\"<\"{}\">\"", url);
             assert_eq!(extract_url_simple(&mes), Some(url));
+        }
+
+        #[test]
+        fn test_split_japanese_text() -> Result<()> {
+            let text = "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。";
+            let delimiters = &["。", "、"];
+            let parts = split_text(text, 10, delimiters)?;
+
+            assert_eq!(
+                parts,
+                vec![
+                    "吾輩は猫である。",
+                    "名前はまだ無い。",
+                    "どこで生れたかとんと",
+                    "見当がつかぬ。"
+                ]
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_split_by_length() -> Result<()> {
+            let text = "あいうiえお😁かきくjけこ🤨さしすkせそ.";
+            let mut parts = split_text(text, 5, &[])?;
+
+            assert_eq!(
+                parts,
+                vec!["あいうiえ", "お😁かきく", "jけこ🤨さ", "しすkせそ", "."]
+            );
+            // parts内の最後の要素を見て一定長より短い文字列の場合はpartsから削除する
+            if let Some(last_part) = parts.last() {
+                if last_part.chars().count() < 3 {
+                    parts.pop();
+                }
+            }
+            assert_eq!(
+                parts,
+                vec!["あいうiえ", "お😁かきく", "jけこ🤨さ", "しすkせそ"]
+            );
+
+            Ok(())
         }
     }
 }

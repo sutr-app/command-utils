@@ -140,6 +140,10 @@ impl ProtobufDescriptor {
     pub fn deserialize_message<T: Message + Default>(buf: &[u8]) -> Result<T> {
         T::decode(&mut Cursor::new(buf)).map_err(|e| e.into())
     }
+    pub fn message_to_json(message: &DynamicMessage) -> Result<String> {
+        let json = serde_json::to_string(&message)?;
+        Ok(json)
+    }
     pub fn print_dynamic_message(message: &DynamicMessage, byte_to_string: bool) {
         let message_str = Self::dynamic_message_to_string(message, byte_to_string);
         println!("{}", message_str);

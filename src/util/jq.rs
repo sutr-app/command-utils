@@ -3,13 +3,13 @@
 
 //! Library to hide details of jaq from the rest of weaver.
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use jaq_core::{
     load::{Arena, File, Loader},
     Ctx, Native, RcIter,
 };
 use jaq_json::Val;
-
+use std::{collections::BTreeMap, sync::Arc};
 type JqFileType = ();
 
 // use jaq_core::load::parse::Def,
@@ -20,24 +20,25 @@ type JqFileType = ();
 // }
 
 fn prepare_jq_context(
-    params: &serde_json::Map<String, serde_json::Value>,
+    params: &std::collections::BTreeMap<String, Arc<serde_json::Value>>,
 ) -> (Vec<String>, Vec<Val>) {
     let (jq_vars, jq_ctx): (Vec<String>, Vec<Val>) = params
         .iter()
-        .map(|(k, v)| (format!("${k}"), Val::from(v.clone())))
+        .map(|(k, v)| (format!("${k}"), Val::from((**v).clone())))
         .unzip();
     (jq_vars, jq_ctx)
 }
 
 /// This is our single entry point for calling into the jaq library to run jq filters.
+/// TODO: reuse the same jaq context for multiple calls.
 pub fn execute_jq(
     // The JSON input to JQ.
-    input: &serde_json::Value,
+    input: serde_json::Value,
     // The JQ filter to compile.
     filter_expr: &str,
     // Note: This will be exposed with `${key}` as the variable name.
-    params: &serde_json::Map<String, serde_json::Value>,
-) -> Result<serde_json::Value, Error> {
+    params: &BTreeMap<String, Arc<serde_json::Value>>,
+) -> Result<serde_json::Value> {
     let loader = Loader::new(
         // ToDo: Allow custom preludes?
         jaq_std::defs().chain(jaq_json::defs()), // .chain(semconv_prelude()), // [],
@@ -71,7 +72,7 @@ pub fn execute_jq(
     // Bundle Results
     let mut errs = Vec::new();
     let mut values = Vec::new();
-    let filter_result = filter.run((ctx, Val::from(input.clone())));
+    let filter_result = filter.run((ctx, Val::from(input)));
     for r in filter_result {
         match r {
             Ok(v) => values.push(serde_json::Value::from(v)),
@@ -143,6 +144,8 @@ fn report_compile((found, undefined): jaq_core::compile::Error<&str>) -> String 
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, sync::Arc};
+
     use super::execute_jq;
     use serde_json::json;
 
@@ -152,8 +155,8 @@ mod tests {
             "key1": 1,
             "key2": 2,
         });
-        let values = serde_json::Map::new();
-        let result = execute_jq(&input, ".", &values).unwrap();
+        let values = BTreeMap::new();
+        let result = execute_jq(input.clone(), ".", &values).unwrap();
         assert_eq!(input, result);
     }
 
@@ -163,21 +166,21 @@ mod tests {
             "key1": 1,
             "key2": 2,
         });
-        let values = serde_json::Map::from_iter(vec![(
+        let values = BTreeMap::from_iter(vec![(
             "ctx1".to_owned(),
-            json!({
+            Arc::new(json!({
                 "key3": 3,
-            }),
+            })),
         )]);
-        let result = execute_jq(&input, "$ctx1", &values).unwrap();
-        assert_eq!(result, values["ctx1"]);
+        let result = execute_jq(input, "$ctx1", &values).unwrap();
+        assert_eq!(result, *(values["ctx1"]));
     }
 
     #[test]
     fn test_lex_error() {
         let input = json!({});
-        let values = serde_json::Map::new();
-        let error = execute_jq(&input, "(", &values).expect_err("Should have failed to lex");
+        let values = BTreeMap::new();
+        let error = execute_jq(input, "(", &values).expect_err("Should have failed to lex");
         let msg = format!("{error}");
         assert!(
             msg.contains("expected closing parenthesis"),
@@ -188,9 +191,9 @@ mod tests {
     #[test]
     fn test_parse_error() {
         let input = json!({});
-        let values = serde_json::Map::new();
-        let error = execute_jq(&input, "if false then .", &values)
-            .expect_err("Should have failed to parse");
+        let values = BTreeMap::new();
+        let error =
+            execute_jq(input, "if false then .", &values).expect_err("Should have failed to parse");
         let msg = format!("{error}");
         assert!(
             msg.contains("expected else or end"),
@@ -201,9 +204,8 @@ mod tests {
     #[test]
     fn test_compile_error() {
         let input = json!({});
-        let values = serde_json::Map::new();
-        let error =
-            execute_jq(&input, ".x | de", &values).expect_err("Should have failed to parse");
+        let values = BTreeMap::new();
+        let error = execute_jq(input, ".x | de", &values).expect_err("Should have failed to parse");
         let msg = format!("{error}");
         assert!(
             msg.contains("undefined filter"),
