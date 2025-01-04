@@ -332,7 +332,11 @@ message TestArg {
             1
         );
         assert_eq!(
-            message.get_field_by_name("job_name").unwrap().as_str().unwrap(),
+            message
+                .get_field_by_name("job_name")
+                .unwrap()
+                .as_str()
+                .unwrap(),
             "test name"
         );
         assert_eq!(
