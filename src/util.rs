@@ -518,3 +518,34 @@ pub mod text {
         }
     }
 }
+
+pub mod json {
+    pub fn merge(a: &mut serde_json::Value, b: serde_json::Value) {
+        if let serde_json::Value::Object(a) = a {
+            if let serde_json::Value::Object(b) = b {
+                for (k, v) in b {
+                    if v.is_null() {
+                        a.remove(&k);
+                    } else {
+                        merge(a.entry(k).or_insert(serde_json::Value::Null), v);
+                    }
+                }
+                return;
+            }
+        }
+
+        *a = b;
+    }
+    pub fn merge_obj(
+        a: &mut serde_json::Map<String, serde_json::Value>,
+        b: serde_json::Map<String, serde_json::Value>,
+    ) {
+        for (k, v) in b {
+            if v.is_null() {
+                a.remove(&k);
+            } else {
+                merge(a.entry(k).or_insert(serde_json::Value::Null), v);
+            }
+        }
+    }
+}

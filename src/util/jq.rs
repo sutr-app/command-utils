@@ -161,10 +161,21 @@ mod tests {
     }
 
     #[test]
+    fn run_jq_string() {
+        let value = "plain string";
+        let input = json!({"input": value});
+        let values = BTreeMap::new();
+        let result = execute_jq(input.clone(), ".input", &values).unwrap();
+        assert_eq!(value, result);
+    }
+
+    #[test]
     fn run_jq_with_context() {
         let input = json!({
             "key1": 1,
-            "key2": 2,
+            "key2": {
+                "key8": 8,
+            },
         });
         let values = BTreeMap::from_iter(vec![(
             "ctx1".to_owned(),
@@ -172,8 +183,10 @@ mod tests {
                 "key3": 3,
             })),
         )]);
-        let result = execute_jq(input, "$ctx1", &values).unwrap();
+        let result = execute_jq(input.clone(), "$ctx1", &values).unwrap();
         assert_eq!(result, *(values["ctx1"]));
+        let result = execute_jq(input, "$ctx1.key3", &values).unwrap();
+        assert_eq!(result, 3);
     }
 
     #[test]

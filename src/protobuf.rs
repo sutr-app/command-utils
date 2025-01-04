@@ -306,7 +306,7 @@ message TestArg {
 
         message Job {
             int64 id = 1;
-            string name = 2;
+            string job_name = 2;
             string description = 3;
             repeated string tags = 4;
         }
@@ -319,7 +319,7 @@ message TestArg {
         let json = r#"
         {
             "id": 1,
-            "name": "test name",
+            "jobName": "test name",
             "description": "test desc:\n あいうえお",
             "tags": ["tag1", "tag2"]
         }
@@ -332,7 +332,7 @@ message TestArg {
             1
         );
         assert_eq!(
-            message.get_field_by_name("name").unwrap().as_str().unwrap(),
+            message.get_field_by_name("job_name").unwrap().as_str().unwrap(),
             "test name"
         );
         assert_eq!(
@@ -363,7 +363,7 @@ message TestArg {
         assert_eq!(message, mes);
         assert_eq!(
             ProtobufDescriptor::dynamic_message_to_string(&message, false),
-            "id: 1\nname: test name\ndescription: test desc:\n あいうえお\ntags: [tag1, tag2]\n"
+            "id: 1\njob_name: test name\ndescription: test desc:\n あいうえお\ntags: [tag1, tag2]\n"
                 .to_string()
         );
         Ok(())
