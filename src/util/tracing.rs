@@ -1,11 +1,12 @@
 use crate::util::id_generator::iputil;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
+use opentelemetry::global;
 use opentelemetry::KeyValue;
-use opentelemetry::{global, trace::TracerProvider};
+use opentelemetry_otlp::SpanExporter;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{BatchConfig, Tracer};
-use opentelemetry_sdk::{runtime, trace as sdktrace, Resource};
+use opentelemetry_sdk::runtime;
+use opentelemetry_sdk::trace::{Tracer, TracerProvider};
 use opentelemetry_semantic_conventions::{
     resource::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_NAME, SERVICE_VERSION},
     SCHEMA_URL,
@@ -100,31 +101,9 @@ pub async fn tracing_init_from_env() -> Result<()> {
         }
     }
 }
-// deprecated
-fn jaeger_tonic_tracer_from_env(app_service_name: String) -> Result<Tracer> {
-    let addr = env::var("JAEGER_ADDR").context("jaeger addr")?;
-    println!("jaeger addr: {:?}", addr);
-    let provider = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(addr.to_string()),
-        )
-        .with_trace_config(
-            sdktrace::Config::default().with_resource(Resource::new(vec![KeyValue::new(
-                SERVICE_NAME,
-                app_service_name.clone(),
-            )])),
-        )
-        .install_batch(runtime::Tokio)
-        .map_err(|e| anyhow!("failed to install jaeger tracer: {:?}", e))?;
-    Ok(provider.tracer(app_service_name.clone()))
-}
 
 fn zipkin_tracer_from_env(app_service_name: String) -> Result<Tracer> {
     let addr = env::var("ZIPKIN_ADDR").context("zipkin addr")?;
-    println!("zipkin addr: {:?}", &addr);
     global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
     opentelemetry_zipkin::new_pipeline()
         .with_service_name(app_service_name)
@@ -137,55 +116,42 @@ fn zipkin_tracer_from_env(app_service_name: String) -> Result<Tracer> {
 }
 
 // Create a Resource that captures information about the entity for which telemetry is recorded.
-fn resource() -> opentelemetry_sdk::Resource {
+fn resource(app_service_name: String) -> opentelemetry_sdk::Resource {
     opentelemetry_sdk::Resource::from_schema_url(
         [
-            KeyValue::new(SERVICE_NAME, APP_SERVICE_NAME),
+            KeyValue::new(SERVICE_NAME, app_service_name),
             KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
             KeyValue::new(DEPLOYMENT_ENVIRONMENT_NAME, "development"), // TODO from config
         ],
         SCHEMA_URL,
     )
 }
-async fn otlp_tracer_from_env(app_service_name: String) -> Result<Option<Tracer>> {
+async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<()> {
     let addr: Result<String> = env::var("OTLP_ADDR").context("otlp addr");
     match addr {
         Ok(addr) => {
-            println!("otlp addr: {:?}", &addr);
-            match opentelemetry_otlp::new_pipeline()
-                .tracing()
-                .with_trace_config(
-                    opentelemetry_sdk::trace::Config::default()
-                        // Customize sampling strategy
-                        .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
-                            opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
-                        )))
-                        // If export trace to AWS X-Ray, you can use XrayIdGenerator
-                        .with_id_generator(opentelemetry_sdk::trace::RandomIdGenerator::default())
-                        .with_resource(resource()),
-                )
-                .with_batch_config(BatchConfig::default())
-                .with_exporter(
-                    opentelemetry_otlp::new_exporter()
-                        .tonic()
-                        .with_endpoint(&addr)
-                        .with_timeout(Duration::from_secs(10)),
-                )
-                .install_batch(opentelemetry_sdk::runtime::Tokio)
-            {
-                Ok(tr) => {
-                    global::set_text_map_propagator(TraceContextPropagator::new());
-                    Ok(Some(tr.tracer(app_service_name.clone())))
-                }
-                Err(e) => {
-                    println!("failed to install otlp tracer: {:?}", e);
-                    Err(e.into())
-                }
-            }
+            let exporter = SpanExporter::builder()
+                .with_tonic()
+                .with_endpoint(&addr)
+                .with_timeout(Duration::from_secs(10))
+                .build()?;
+
+            let provider = TracerProvider::builder()
+                .with_resource(resource(app_service_name.clone()))
+                .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
+                    opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
+                )))
+                .with_id_generator(opentelemetry_sdk::trace::RandomIdGenerator::default())
+                .with_batch_exporter(exporter, runtime::Tokio)
+                .build();
+            global::set_tracer_provider(provider);
+            global::set_text_map_propagator(TraceContextPropagator::new());
+            // Ok(Some(provider))
+            Ok(())
         }
         Err(_e) => {
             // not specified
-            Ok(None)
+            Ok(())
         }
     }
 }
@@ -216,14 +182,9 @@ pub async fn setup_layer_from_logging_config(
         .app_name
         .clone()
         .unwrap_or_else(|| APP_SERVICE_NAME.to_string());
-    let remote_tracer = match otlp_tracer_from_env(app_service_name.clone()).await {
-        Ok(Some(tr)) => Some(tr),
-        Ok(None) => zipkin_tracer_from_env(app_service_name.clone())
-            .or_else(|_| jaeger_tonic_tracer_from_env(app_service_name))
-            .to_option(),
-        Err(_) => None,
-    };
+    set_otlp_tracer_provider_from_env(app_service_name.clone()).await?;
 
+    let remote_tracer = zipkin_tracer_from_env(app_service_name.clone()).to_option();
     let subscriber = Box::new(
         tracing_subscriber::registry()
             .with(filter)
