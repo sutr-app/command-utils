@@ -144,6 +144,10 @@ impl ProtobufDescriptor {
         let json = serde_json::to_string(&message)?;
         Ok(json)
     }
+    pub fn message_to_json_value(message: &DynamicMessage) -> Result<serde_json::Value> {
+        let json = serde_json::to_value(message)?;
+        Ok(json)
+    }
     pub fn print_dynamic_message(message: &DynamicMessage, byte_to_string: bool) {
         let message_str = Self::dynamic_message_to_string(message, byte_to_string);
         println!("{}", message_str);
@@ -369,6 +373,16 @@ message TestArg {
             ProtobufDescriptor::dynamic_message_to_string(&message, false),
             "id: 1\njob_name: test name\ndescription: test desc:\n あいうえお\ntags: [tag1, tag2]\n"
                 .to_string()
+        );
+        let json = ProtobufDescriptor::message_to_json_value(&message)?;
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "1", // XXX string?
+                "jobName": "test name",
+                "description": "test desc:\n あいうえお",
+                "tags": ["tag1", "tag2"]
+            })
         );
         Ok(())
     }
