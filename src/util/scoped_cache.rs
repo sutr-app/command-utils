@@ -167,4 +167,53 @@ mod tests {
         .await;
         assert_eq!(value2, "value2");
     }
+    #[tokio::test]
+    async fn test_scoped_cache_macro_nested() {
+        let value = with_cache(|cache| async move {
+            let key1 = "key1";
+            let key2 = "key2";
+            cache!(cache, key1, async {
+                cache!(cache, key2, async {
+                    sleep(Duration::from_secs(1)).await; // Heavy computation
+                    "value"
+                })
+            })
+        })
+        .await;
+        assert_eq!(value, "value");
+    }
+    #[tokio::test]
+    async fn test_scoped_cache_nested() {
+        async fn heavy_computation_once(value: &'static str) -> Result<&'static str> {
+            // 2回以上同じvalueで呼ばれると失敗(panic)する
+            static mut COUNT: i32 = 0;
+            unsafe {
+                COUNT += 1;
+                if COUNT > 1 {
+                    panic!("called more than once");
+                }
+            }
+            Ok(value)
+        }
+        async fn heavy_computation(value: &'static str) -> Result<&'static str> {
+            Ok(value)
+        }
+        let value = with_cache(|cache| async move {
+            let key1 = "key1";
+            let v1 = cache_ok!(cache, key1, heavy_computation("value1")).unwrap();
+            assert!(v1 == "value1");
+            let v2 = with_cache(|cache| async move {
+                // let key1 = "key1";
+                cache_ok!(cache, key1, heavy_computation_once("value2"));
+                cache_ok!(cache, key1, heavy_computation_once("value2"))
+            })
+            .await;
+            let v1 = cache_ok!(cache, key1, heavy_computation("value3")).unwrap();
+            // from cache
+            assert!(v1 == "value1");
+            v2
+        })
+        .await;
+        assert!(value.is_ok());
+    }
 }
