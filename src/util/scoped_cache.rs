@@ -70,7 +70,8 @@ macro_rules! cache {
         }
     };
 }
-// `cache_ok(key) { heavy_computation_result() }` という形式でheavy_computation_result()の結果がOKの場合のみキャッシュするような形で使えるようにするためのマクロ
+// Macro for caching only when heavy_computation_result() returns Ok,
+// allowing usage in the form `cache_ok(key) { heavy_computation_result() }`
 #[macro_export]
 macro_rules! cache_ok {
     ($cache:expr, $key:expr, $heavy_computation_result:expr) => {
@@ -185,7 +186,7 @@ mod tests {
     #[tokio::test]
     async fn test_scoped_cache_nested() {
         async fn heavy_computation_once(value: &'static str) -> Result<&'static str> {
-            // 2回以上同じvalueで呼ばれると失敗(panic)する
+            // Fails (panics) if called with the same value more than once
             static mut COUNT: i32 = 0;
             unsafe {
                 COUNT += 1;
@@ -204,7 +205,7 @@ mod tests {
             assert!(v1 == "value1");
             let v2 = with_cache(|cache| async move {
                 // let key1 = "key1";
-                cache_ok!(cache, key1, heavy_computation_once("value2"));
+                let _ = cache_ok!(cache, key1, heavy_computation_once("value2"));
                 cache_ok!(cache, key1, heavy_computation_once("value2"))
             })
             .await;

@@ -1,3 +1,4 @@
+use super::result::ToOption;
 use crate::util::id_generator::iputil;
 use anyhow::{Context, Result};
 use opentelemetry::global;
@@ -22,8 +23,7 @@ use tracing_subscriber::fmt::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{filter, prelude::*};
 
-use super::result::ToOption;
-
+// default name (fixed)
 const APP_SERVICE_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[derive(Deserialize, Debug)]
@@ -162,6 +162,8 @@ pub async fn setup_layer_from_logging_config(
     let lv = tracing::Level::from_str(conf.level.as_ref().unwrap_or(&"INFO".to_string()).as_str())
         .unwrap_or(tracing::Level::INFO);
     let filter = filter::Targets::new().with_default(lv);
+
+    // as a deny filter (DEBUG, but remove noisy logs)
     let dir = conf
         .file_dir
         .as_ref()
