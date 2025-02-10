@@ -45,8 +45,8 @@ impl IDGenerator {
 
 // bit: smaller than 32
 fn random_node(bit: u32) -> u32 {
-    let mut rng = rand::thread_rng();
-    let n1: u32 = rng.gen();
+    let mut rng = rand::rng();
+    let n1: u32 = rng.random();
     let n = ((1 << bit) - 1) & n1;
     tracing::warn!("using random node num for id generator: {}", n);
     n

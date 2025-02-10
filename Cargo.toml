@@ -31,7 +31,7 @@ pnet = { version = "0.35" }
 prost = "0.13"
 prost-reflect = { version = "0.14", features = ["serde"] }
 prost-reflect-build = "0.14"
-rand = { version = "0.8" }
+rand = { version = "0.9" }
 regex = { version = "1" }
 rs-snowflake = { version = "0.6" }
 serde = { version = "1" }
