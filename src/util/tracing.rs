@@ -230,5 +230,5 @@ pub async fn setup_layer_from_logging_config(
 
 // for simple stdout logging
 pub fn tracing_init_test(level: tracing::Level) {
-    tracing_subscriber::fmt().with_max_level(level).init();
+    let _ = tracing_subscriber::fmt().with_max_level(level).try_init();
 }
