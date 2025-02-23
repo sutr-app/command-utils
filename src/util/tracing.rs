@@ -21,6 +21,7 @@ use std::time::Duration;
 use tracing::Subscriber;
 use tracing_subscriber::fmt::Layer;
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{filter, prelude::*};
 
 // default name (fixed)
@@ -232,5 +233,8 @@ pub async fn setup_layer_from_logging_config(
 
 // for simple stdout logging
 pub fn tracing_init_test(level: tracing::Level) {
-    let _ = tracing_subscriber::fmt().with_max_level(level).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_env_filter(EnvFilter::from_default_env())
+        .try_init();
 }
