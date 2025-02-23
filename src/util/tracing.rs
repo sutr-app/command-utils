@@ -162,6 +162,7 @@ pub async fn setup_layer_from_logging_config(
     let lv = tracing::Level::from_str(conf.level.as_ref().unwrap_or(&"INFO".to_string()).as_str())
         .unwrap_or(tracing::Level::INFO);
     let filter = filter::Targets::new().with_default(lv);
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
 
     // as a deny filter (DEBUG, but remove noisy logs)
     let dir = conf
@@ -190,6 +191,7 @@ pub async fn setup_layer_from_logging_config(
     let subscriber = Box::new(
         tracing_subscriber::registry()
             .with(filter)
+            .with(env_filter)
             .with(match create_file_fn() {
                 // for json case
                 Some(f) if conf.use_json => Some(
