@@ -34,11 +34,11 @@ impl IDGenerator {
     pub fn generate(&mut self) -> Result<i64> {
         match self {
             // generete and pool ids (max 4092 id) : https://github.com/BinChengZhao/snowflake-rs/blob/master/src/lib.rs#L252
-            IDGenerator::Snowflake(gen) => gen
+            IDGenerator::Snowflake(generator) => generator
                 .lock()
                 .map(|mut g| g.get_id())
                 .map_err(|e| anyhow!(format!("generate id error: {:?}", e))),
-            IDGenerator::Mock(gen) => Ok(gen.generate_id()),
+            IDGenerator::Mock(generator) => Ok(generator.generate_id()),
         }
     }
 }
@@ -58,14 +58,14 @@ pub fn new_generator_by_ip() -> IDGenerator {
     tracing::debug!("using node num for id generator: {}", node);
     // XXX machine_id <= 5bit
     // ref. https://github.com/BinChengZhao/snowflake-rs/blob/16dec24a484852ea0706de95966dfc791e3cdcbf/src/lib.rs#L171
-    let gen = SnowflakeIdBucket::new((node >> 5) as i32, node as i32);
-    IDGenerator::Snowflake(Arc::new(Mutex::new(gen)))
+    let g = SnowflakeIdBucket::new((node >> 5) as i32, node as i32);
+    IDGenerator::Snowflake(Arc::new(Mutex::new(g)))
 }
 
 // node_id: only lower 10bit is valid
 pub fn new_generator(node_id: i32) -> IDGenerator {
-    let gen = SnowflakeIdBucket::new(node_id >> 5, node_id);
-    IDGenerator::Snowflake(Arc::new(Mutex::new(gen)))
+    let g = SnowflakeIdBucket::new(node_id >> 5, node_id);
+    IDGenerator::Snowflake(Arc::new(Mutex::new(g)))
 }
 
 #[tokio::test]
@@ -75,11 +75,11 @@ async fn thread_safe_test() {
     use tokio::task::JoinSet;
 
     let mut set = JoinSet::new();
-    let gen: Arc<Mutex<IDGenerator>> = Arc::new(Mutex::new(new_generator_by_ip()));
+    let g: Arc<Mutex<IDGenerator>> = Arc::new(Mutex::new(new_generator_by_ip()));
 
     let _jh = (0..1000)
         .map(|_j| {
-            let gen2 = gen.clone();
+            let gen2 = g.clone();
             set.spawn(async move {
                 (0..1000)
                     .map(|_i| gen2.lock().unwrap().generate())
