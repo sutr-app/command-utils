@@ -1,4 +1,3 @@
-use super::result::ToOption;
 use crate::util::id_generator::iputil;
 use anyhow::{Context, Result};
 use opentelemetry::global;
@@ -188,7 +187,7 @@ pub async fn setup_layer_from_logging_config(
         .unwrap_or_else(|| APP_SERVICE_NAME.to_string());
     set_otlp_tracer_provider_from_env(app_service_name.clone()).await?;
 
-    let remote_tracer = zipkin_tracer_from_env(app_service_name.clone()).to_option();
+    let remote_tracer = zipkin_tracer_from_env(app_service_name.clone()).ok();
     let subscriber = Box::new(
         tracing_subscriber::registry()
             .with(filter)

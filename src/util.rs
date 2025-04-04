@@ -23,24 +23,13 @@ pub mod result {
             }
         }
     }
-    pub trait ToOption<T, E> {
-        fn to_option(self) -> Option<T>;
-    }
 
-    impl<T, E> ToOption<T, E> for Result<T, E> {
-        #[inline]
-        fn to_option(self) -> Option<T> {
-            match self {
-                Ok(r) => Some(r),
-                Err(_e) => None,
-            }
-        }
-    }
-
+    #[deprecated(note = "use `inspect` instead")]
     pub trait Tap<T, E, F> {
         fn tap(self, f: F) -> Result<T, E>;
     }
 
+    #[allow(deprecated)]
     impl<T, E, F> Tap<T, E, F> for Result<T, E>
     where
         F: FnOnce(&T),
@@ -57,10 +46,12 @@ pub mod result {
         }
     }
 
+    #[deprecated(note = "use `inspect_err` instead")]
     pub trait TapErr<T, E, F> {
         fn tap_err(self, f: F) -> Result<T, E>;
     }
 
+    #[allow(deprecated)]
     impl<T, E, F> TapErr<T, E, F> for Result<T, E>
     where
         F: FnOnce(&E),
@@ -152,9 +143,11 @@ pub mod result {
 pub mod option {
     use futures::future::BoxFuture;
 
+    #[deprecated(note = "use `and_then` instead")]
     pub trait FlatMap<T, U, F: FnOnce(T) -> Option<U>> {
         fn flat_map(self, op: F) -> Option<U>;
     }
+    #[allow(deprecated)]
     impl<T, U, F: FnOnce(T) -> Option<U>> FlatMap<T, U, F> for Option<T> {
         #[inline]
         fn flat_map(self, op: F) -> Option<U> {
@@ -164,9 +157,11 @@ pub mod option {
             }
         }
     }
+    #[deprecated(note = "use `ok_or` instead")]
     pub trait ToResult<T, U, F: FnOnce() -> U> {
         fn to_result(self, err: F) -> Result<T, U>;
     }
+    #[allow(deprecated)]
     impl<T, U, F: FnOnce() -> U> ToResult<T, U, F> for Option<T> {
         #[inline]
         fn to_result(self, err: F) -> Result<T, U> {
@@ -188,9 +183,11 @@ pub mod option {
             }
         }
     }
+    #[deprecated(note = "use `is_some_and` instead")]
     pub trait Exists<T, F: FnOnce(T) -> bool> {
         fn exists(self, f: F) -> bool;
     }
+    #[allow(deprecated)]
     impl<T, F: FnOnce(T) -> bool> Exists<T, F> for Option<T> {
         #[inline]
         fn exists(self, f: F) -> bool {
@@ -385,7 +382,6 @@ pub mod datetime {
     }
 }
 pub mod text {
-    use super::option::FlatMap;
     use anyhow::{anyhow, Result};
     use regex::Regex;
 
@@ -394,7 +390,7 @@ pub mod text {
     pub fn extract_url_simple(message: &str) -> Option<&str> {
         let re = Regex::new(URL_REGEX).unwrap();
         re.captures(message)
-            .flat_map(|c| c.get(1).map(|s| s.as_str()))
+            .and_then(|c| c.get(1).map(|s| s.as_str()))
     }
     /// 文字列を指定された区切り文字または最大長で分割する
     ///
