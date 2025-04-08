@@ -10,10 +10,13 @@ pub mod result {
     // use async_trait::async_trait;
     // use std::pin::Pin;
 
+    // use encoding::all;
     use futures::future::BoxFuture;
+    #[deprecated(note = "use `and_then` instead")]
     pub trait FlatMap<T, U, F: FnOnce(T) -> Result<U>> {
         fn flat_map(self, op: F) -> Result<U>;
     }
+    #[allow(deprecated)]
     impl<T, U, F: FnOnce(T) -> Result<U>> FlatMap<T, U, F> for Result<T> {
         #[inline]
         fn flat_map(self, op: F) -> Result<U> {
@@ -287,15 +290,14 @@ pub mod string {
 // }
 
 pub mod datetime {
-    use super::result::FlatMap;
     use anyhow::{anyhow, Result};
     use chrono::{DateTime, FixedOffset, LocalResult, TimeZone, Utc};
     use once_cell::sync::Lazy;
 
     pub static OFFSET_SEC: Lazy<i32> = Lazy::<i32>::new(|| {
         std::env::var("TZ_OFFSET_HOURS")
-            .map_err(|e| e.into())
-            .flat_map(|s| s.parse::<i32>().map_err(|e| e.into()))
+            .map_err(|e| -> anyhow::Error { e.into() })
+            .and_then(|s| s.parse::<i32>().map_err(|e| -> anyhow::Error { e.into() }))
             .unwrap_or(9)
             * 3600
     });
