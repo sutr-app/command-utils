@@ -201,9 +201,11 @@ pub mod option {
         }
     }
 
+    #[deprecated(note = "use `is_none_or` instead")]
     pub trait ForAll<T, F: FnOnce(T) -> bool> {
         fn forall(self, f: F) -> bool;
     }
+    #[allow(deprecated)]
     impl<T, F: FnOnce(T) -> bool> ForAll<T, F> for Option<T> {
         #[inline]
         fn forall(self, f: F) -> bool {
