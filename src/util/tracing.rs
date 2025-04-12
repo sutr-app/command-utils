@@ -2,11 +2,15 @@ use crate::util::id_generator::iputil;
 use anyhow::{Context, Result};
 use opentelemetry::global;
 use opentelemetry::KeyValue;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::LogExporter;
+use opentelemetry_otlp::MetricExporter;
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::logs::SdkLoggerProvider;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::runtime;
-use opentelemetry_sdk::trace::{Tracer, TracerProvider};
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_semantic_conventions::{
     resource::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_NAME, SERVICE_VERSION},
     SCHEMA_URL,
@@ -17,6 +21,7 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
+use tokio::sync::OnceCell;
 use tracing::Subscriber;
 use tracing_subscriber::fmt::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -25,6 +30,9 @@ use tracing_subscriber::{filter, prelude::*};
 
 // default name (fixed)
 const APP_SERVICE_NAME: &str = env!("CARGO_PKG_NAME");
+static GLOBAL_TRACER_PROVIDER: OnceCell<SdkTracerProvider> = OnceCell::const_new();
+static GLOBAL_LOGGER_PROVIDER: OnceCell<SdkLoggerProvider> = OnceCell::const_new();
+static GLOBAL_METER_PROVIDER: OnceCell<SdkMeterProvider> = OnceCell::const_new();
 
 #[derive(Deserialize, Debug)]
 pub struct LoggingConfig {
@@ -71,7 +79,21 @@ pub async fn init_from_env_and_filename(
 }
 
 pub fn shutdown_tracer_provider() {
-    opentelemetry::global::shutdown_tracer_provider();
+    if let Some(provider) = GLOBAL_TRACER_PROVIDER.get() {
+        let _ = provider.shutdown().inspect_err(|e| {
+            eprintln!("failed to shutdown tracer provider: {:?}", e);
+        });
+    }
+    if let Some(provider) = GLOBAL_METER_PROVIDER.get() {
+        let _ = provider.shutdown().inspect_err(|e| {
+            eprintln!("failed to shutdown meter provider: {:?}", e);
+        });
+    }
+    if let Some(provider) = GLOBAL_LOGGER_PROVIDER.get() {
+        let _ = provider.shutdown().inspect_err(|e| {
+            eprintln!("failed to shutdown logger provider: {:?}", e);
+        });
+    }
 }
 
 pub fn create_filename_with_ip_postfix(
@@ -102,29 +124,31 @@ pub async fn tracing_init_from_env() -> Result<()> {
     }
 }
 
-fn zipkin_tracer_from_env(app_service_name: String) -> Result<Tracer> {
-    let addr = env::var("ZIPKIN_ADDR").context("zipkin addr")?;
-    global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
-    opentelemetry_zipkin::new_pipeline()
-        .with_service_name(app_service_name)
-        .with_collector_endpoint(addr)
-        .install_batch(opentelemetry_sdk::runtime::Tokio)
-        .map_err(|e| {
-            println!("failed to install zipkin tracer: {:?}", e);
-            e.into()
-        })
-}
+// fn zipkin_tracer_from_env(app_service_name: String) -> Result<Tracer> {
+//     let addr = env::var("ZIPKIN_ADDR").context("zipkin addr")?;
+//     global::set_text_map_propagator(opentelemetry_zipkin::Propagator::new());
+//     opentelemetry_zipkin::new_pipeline()
+//         .with_service_name(app_service_name)
+//         .with_collector_endpoint(addr)
+//         .install_batch(opentelemetry_sdk::runtime::Tokio)
+//         .map_err(|e| {
+//             println!("failed to install zipkin tracer: {:?}", e);
+//             e.into()
+//         })
+// }
 
 // Create a Resource that captures information about the entity for which telemetry is recorded.
 fn resource(app_service_name: String) -> opentelemetry_sdk::Resource {
-    opentelemetry_sdk::Resource::from_schema_url(
-        [
-            KeyValue::new(SERVICE_NAME, app_service_name),
-            KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-            KeyValue::new(DEPLOYMENT_ENVIRONMENT_NAME, "development"), // TODO from config
-        ],
-        SCHEMA_URL,
-    )
+    opentelemetry_sdk::Resource::builder()
+        .with_schema_url(
+            [
+                KeyValue::new(SERVICE_NAME, app_service_name),
+                KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+                KeyValue::new(DEPLOYMENT_ENVIRONMENT_NAME, "development"), // TODO from config
+            ],
+            SCHEMA_URL,
+        )
+        .build()
 }
 async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<()> {
     let addr: Result<String> = env::var("OTLP_ADDR").context("otlp addr");
@@ -136,15 +160,16 @@ async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<(
                 .with_timeout(Duration::from_secs(10))
                 .build()?;
 
-            let provider = TracerProvider::builder()
+            let provider = SdkTracerProvider::builder()
                 .with_resource(resource(app_service_name.clone()))
-                .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
-                    opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
-                )))
-                .with_id_generator(opentelemetry_sdk::trace::RandomIdGenerator::default())
-                .with_batch_exporter(exporter, runtime::Tokio)
+                // .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
+                //     opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
+                // )))
+                // .with_id_generator(opentelemetry_sdk::trace::RandomIdGenerator::default())
+                .with_batch_exporter(exporter)
                 .build();
-            global::set_tracer_provider(provider);
+            global::set_tracer_provider(provider.clone());
+            GLOBAL_TRACER_PROVIDER.set(provider).ok();
             global::set_text_map_propagator(TraceContextPropagator::new());
             // Ok(Some(provider))
             Ok(())
@@ -154,6 +179,97 @@ async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<(
             Ok(())
         }
     }
+}
+
+async fn create_otlp_logger_provider_layer_from_env(
+    app_service_name: String,
+) -> Option<OpenTelemetryTracingBridge<SdkLoggerProvider, opentelemetry_sdk::logs::SdkLogger>> {
+    let addr: Result<String> = env::var("OTLP_ADDR").context("otlp addr");
+    match addr {
+        Ok(addr) => {
+            // Get protocol configuration from environment or use default "none" (no log exporter)
+            let protocol = env::var("OTLP_LOG_PROTOCOL").unwrap_or_else(|_| "none".to_string());
+            let builder = LogExporter::builder();
+
+            // Use specific log endpoint if provided, otherwise use the general OTLP address
+            let log_endpoint = env::var("OTLP_LOG_ENDPOINT").unwrap_or_else(|_| addr.clone());
+
+            // Try the specified protocol or auto-detect if set to "auto"
+            let exporter = match protocol.as_str() {
+                "grpc" => builder
+                    .with_tonic()
+                    .with_endpoint(&log_endpoint)
+                    .with_timeout(Duration::from_secs(10))
+                    .build(),
+                "http" | "http/protobuf" => builder
+                    .with_http()
+                    .with_endpoint(&log_endpoint)
+                    .with_timeout(Duration::from_secs(10))
+                    .build(),
+                "auto" => {
+                    // Try gRPC first, fall back to HTTP if it fails
+                    let grpc_result = builder
+                        .clone()
+                        .with_tonic()
+                        .with_endpoint(&log_endpoint)
+                        .with_timeout(Duration::from_secs(10))
+                        .build();
+                    if grpc_result.is_err() {
+                        tracing::debug!(
+                            "gRPC log exporter failed, trying HTTP: {:?}",
+                            grpc_result.err()
+                        );
+                        builder
+                            .with_http()
+                            .with_endpoint(&log_endpoint)
+                            .with_timeout(Duration::from_secs(10))
+                            .build()
+                    } else {
+                        grpc_result
+                    }
+                }
+                // include "none"
+                _ => {
+                    tracing::warn!("OTLP log exporter is disabled.");
+                    return None;
+                }
+            };
+            match exporter {
+                Ok(exp) => {
+                    let provider = SdkLoggerProvider::builder()
+                        .with_resource(resource(app_service_name.clone()))
+                        .with_batch_exporter(exp)
+                        .build();
+                    let otel_layer = OpenTelemetryTracingBridge::new(&provider.clone());
+                    GLOBAL_LOGGER_PROVIDER.set(provider).ok();
+                    Some(otel_layer)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to create OTLP log exporter: {:?}. Log telemetry will be disabled.",
+                        e
+                    );
+                    None
+                }
+            }
+        }
+        Err(_) => {
+            // OTLP address not specified
+            None
+        }
+    }
+}
+
+async fn set_otlp_meter_provider_from_env(app_service_name: String) -> Result<()> {
+    let exporter = MetricExporter::builder().with_tonic().build()?;
+
+    let provider = SdkMeterProvider::builder()
+        .with_periodic_exporter(exporter)
+        .with_resource(resource(app_service_name.clone()))
+        .build();
+    global::set_meter_provider(provider.clone());
+    GLOBAL_METER_PROVIDER.set(provider).ok();
+    Ok(())
 }
 
 pub async fn setup_layer_from_logging_config(
@@ -185,13 +301,23 @@ pub async fn setup_layer_from_logging_config(
         .app_name
         .clone()
         .unwrap_or_else(|| APP_SERVICE_NAME.to_string());
-    set_otlp_tracer_provider_from_env(app_service_name.clone()).await?;
 
-    let remote_tracer = zipkin_tracer_from_env(app_service_name.clone()).ok();
+    set_otlp_meter_provider_from_env(app_service_name.clone()).await?;
+    set_otlp_tracer_provider_from_env(app_service_name.clone()).await?;
+    let otlp_layer = create_otlp_logger_provider_layer_from_env(app_service_name.clone()).await;
+    let filter_otel = EnvFilter::new("info")
+        .add_directive("hyper=off".parse().unwrap())
+        .add_directive("tonic=off".parse().unwrap())
+        .add_directive("h2=off".parse().unwrap())
+        .add_directive("reqwest=off".parse().unwrap());
+    let otlp_layer = otlp_layer.with_filter(filter_otel);
+
+    // let remote_tracer = zipkin_tracer_from_env(app_service_name.clone()).ok();
     let subscriber = Box::new(
         tracing_subscriber::registry()
             .with(filter)
             .with(env_filter)
+            .with(otlp_layer)
             .with(match create_file_fn() {
                 // for json case
                 Some(f) if conf.use_json => Some(
@@ -211,7 +337,7 @@ pub async fn setup_layer_from_logging_config(
                 ),
                 _ => None,
             })
-            .with(remote_tracer.map(|t| tracing_opentelemetry::layer().with_tracer(t)))
+            // .with(remote_tracer.map(|t| tracing_opentelemetry::layer().with_tracer(t)))
             .with(if !conf.use_json && conf.use_stdout {
                 Some(tracing_subscriber::fmt::layer().pretty())
             } else {
