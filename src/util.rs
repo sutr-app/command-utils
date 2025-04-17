@@ -3,6 +3,7 @@ pub mod id_generator;
 pub mod jq;
 pub mod scoped_cache;
 pub mod shutdown;
+pub mod stack;
 pub mod tracing;
 
 pub mod result {
