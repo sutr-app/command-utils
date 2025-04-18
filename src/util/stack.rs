@@ -354,6 +354,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_json_pointer_with_json_values() {
         use serde_json::json;
 
