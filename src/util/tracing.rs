@@ -360,6 +360,5 @@ pub async fn setup_layer_from_logging_config(
 pub fn tracing_init_test(level: tracing::Level) {
     let _ = tracing_subscriber::fmt()
         .with_max_level(level)
-        .with_env_filter(EnvFilter::from_default_env())
         .try_init();
 }
