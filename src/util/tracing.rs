@@ -11,10 +11,7 @@ use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use opentelemetry_semantic_conventions::{
-    resource::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_NAME, SERVICE_VERSION},
-    SCHEMA_URL,
-};
+use opentelemetry_semantic_conventions::resource::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_VERSION};
 use serde::Deserialize;
 use std::env;
 use std::fs::File;
@@ -140,14 +137,12 @@ pub async fn tracing_init_from_env() -> Result<()> {
 // Create a Resource that captures information about the entity for which telemetry is recorded.
 fn resource(app_service_name: String) -> opentelemetry_sdk::Resource {
     opentelemetry_sdk::Resource::builder()
-        .with_schema_url(
-            [
-                KeyValue::new(SERVICE_NAME, app_service_name),
-                KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-                KeyValue::new(DEPLOYMENT_ENVIRONMENT_NAME, "development"), // TODO from config
-            ],
-            SCHEMA_URL,
-        )
+        .with_service_name(app_service_name)
+        .with_attribute(KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")))
+        .with_attribute(KeyValue::new(
+            DEPLOYMENT_ENVIRONMENT_NAME,
+            env::var("DEPLOYMENT_ENVIRONMENT_NAME").unwrap_or_else(|_| "development".to_string()),
+        ))
         .build()
 }
 async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<()> {
@@ -307,9 +302,9 @@ pub async fn setup_layer_from_logging_config(
     let otlp_layer = create_otlp_logger_provider_layer_from_env(app_service_name.clone()).await;
     let filter_otel = EnvFilter::new("info")
         .add_directive("hyper=off".parse().unwrap())
-        .add_directive("tonic=off".parse().unwrap())
-        .add_directive("h2=off".parse().unwrap())
-        .add_directive("reqwest=off".parse().unwrap());
+        .add_directive("h2=off".parse().unwrap());
+    // .add_directive("tonic=off".parse().unwrap())
+    // .add_directive("reqwest=off".parse().unwrap());
     let otlp_layer = otlp_layer.with_filter(filter_otel);
 
     // let remote_tracer = zipkin_tracer_from_env(app_service_name.clone()).ok();
