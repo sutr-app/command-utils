@@ -18,6 +18,10 @@ itertools = "0.14"
 jaq-core = { version = "2" }
 jaq-json = { version = "1", features = ["serde_json"] }
 jaq-std = { version = "2" }
+liquid = "0.26"
+liquid-core = "0.26"
+liquid-lib = "0.26"
+liquid-derive = "0.26"
 once_cell = { version = "1" }
 opentelemetry = { version = "0.29" }
 opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"] }
