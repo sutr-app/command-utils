@@ -1,6 +1,7 @@
 pub mod encoding;
 pub mod id_generator;
 pub mod jq;
+pub mod json_schema;
 pub mod liquid;
 pub mod scoped_cache;
 pub mod shutdown;
