@@ -1,7 +1,12 @@
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    hash::{DefaultHasher, Hasher},
+};
+
+use crate::util::datetime;
 
 // for deserialize from env
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -204,6 +209,16 @@ impl TextUtil {
                 }
             })
             .collect()
+    }
+    pub fn generate_random_key(prefix: Option<&String>) -> String {
+        let mut hasher = DefaultHasher::default();
+        hasher.write_i64(datetime::now_millis());
+        hasher.write_i64(rand::random()); // random
+        if let Some(p) = prefix {
+            format!("{}_{:x}", p, hasher.finish())
+        } else {
+            format!("{:x}", hasher.finish())
+        }
     }
 }
 
