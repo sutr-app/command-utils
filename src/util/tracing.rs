@@ -3,16 +3,21 @@ use anyhow::{Context, Result};
 use opentelemetry::global;
 use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_otlp::tonic_types;
 use opentelemetry_otlp::LogExporter;
 use opentelemetry_otlp::MetricExporter;
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::WithHttpConfig;
+use opentelemetry_otlp::WithTonicConfig;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry_sdk::trace::BatchSpanProcessor;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_semantic_conventions::resource::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_VERSION};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::path::PathBuf;
@@ -147,12 +152,61 @@ fn resource(app_service_name: String) -> opentelemetry_sdk::Resource {
 }
 async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<()> {
     let addr: Result<String> = env::var("OTLP_ADDR").context("otlp addr");
-    match addr {
-        Ok(addr) => {
+    let http_addr: Result<String> = env::var("OTLP_HTTP_ADDR").context("otlp http addr");
+    let token: Option<String> = env::var("OTLP_AUTH_TOKEN").context("otlp addr").ok();
+    // Basic Auth: base64(public_key:secret_key)
+    let auth_header = token.map(|t| format!("Basic {}", t));
+    match (addr, http_addr) {
+        (Ok(addr), _) => {
+            let mut metadata = tonic_types::metadata::MetadataMap::new();
+            if let Some(auth) = auth_header {
+                metadata.insert("Authorization", auth.parse().unwrap());
+            }
+
             let exporter = SpanExporter::builder()
                 .with_tonic()
                 .with_endpoint(&addr)
                 .with_timeout(Duration::from_secs(10))
+                .with_metadata(metadata)
+                .build()?;
+
+            let provider = SdkTracerProvider::builder()
+                .with_resource(resource(app_service_name.clone()))
+                // .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
+                //     opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
+                // )))
+                // .with_id_generator(opentelemetry_sdk::trace::RandomIdGenerator::default())
+                .with_batch_exporter(exporter)
+                // for test
+                // .with_span_processor(
+                //     BatchSpanProcessor::builder(exporter)
+                //         .with_batch_config(
+                //             opentelemetry_sdk::trace::BatchConfigBuilder::default()
+                //                 .with_max_queue_size(5)
+                //                 .with_max_export_batch_size(2)
+                //                 .with_scheduled_delay(Duration::from_millis(100))
+                //                 .build(),
+                //         )
+                //         .build(),
+                // )
+                .build();
+            global::set_tracer_provider(provider.clone());
+            GLOBAL_TRACER_PROVIDER.set(provider).ok();
+            global::set_text_map_propagator(TraceContextPropagator::new());
+            // Ok(Some(provider))
+            Ok(())
+        }
+        (_, Ok(http_addr)) => {
+            let mut headers = HashMap::new();
+            if let Some(auth) = auth_header {
+                headers.insert("Authorization".to_string(), auth);
+            }
+
+            let exporter = SpanExporter::builder()
+                .with_http()
+                .with_endpoint(&http_addr)
+                .with_timeout(Duration::from_secs(10))
+                .with_headers(headers)
                 .build()?;
 
             let provider = SdkTracerProvider::builder()
@@ -169,7 +223,7 @@ async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<(
             // Ok(Some(provider))
             Ok(())
         }
-        Err(_e) => {
+        (_, _) => {
             // not specified
             Ok(())
         }
