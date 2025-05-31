@@ -3,7 +3,6 @@ use anyhow::{Context, Result};
 use opentelemetry::global;
 use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::tonic_types;
 use opentelemetry_otlp::LogExporter;
 use opentelemetry_otlp::MetricExporter;
 use opentelemetry_otlp::SpanExporter;
@@ -157,7 +156,8 @@ async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<(
     let auth_header = token.map(|t| format!("Basic {}", t));
     match (addr, http_addr) {
         (Ok(addr), _) => {
-            let mut metadata = tonic_types::metadata::MetadataMap::new();
+            // let mut metadata = tonic_types::metadata::MetadataMap::new();
+            let mut metadata = tonic::metadata::MetadataMap::new();
             if let Some(auth) = auth_header {
                 metadata.insert("Authorization", auth.parse().unwrap());
             }
