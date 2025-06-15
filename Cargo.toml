@@ -34,9 +34,9 @@ opentelemetry-appender-tracing = { version = "0.30" }
 opentelemetry-stdout = { version = "0.30" }
 opentelemetry-zipkin = { version = "0.30", features = ["reqwest-client"] }
 pnet = { version = "0.35" }
-prost = "0.13"
-prost-reflect = { version = "0.15", features = ["serde"] }
-prost-reflect-build = "0.15"
+prost = "0.14"
+prost-reflect = { version = "0.16", features = ["serde"] }
+prost-reflect-build = "0.16"
 rand = { version = "0.9" }
 regex = { version = "1" }
 rs-snowflake = { version = "0.6" }
