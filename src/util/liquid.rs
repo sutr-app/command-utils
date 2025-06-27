@@ -46,14 +46,90 @@ impl Filter for JsonDecodeFilter {
         if input.is_nil() {
             return Ok(Value::Nil);
         }
-
         let s = input.to_kstr();
+        let s_trimmed = s.trim();
         // そのままserde_jsonでデコード
-        let unescaped: String = serde_json::from_str(&s)
-            .or_else(|_| serde_json::from_str(&format!("\"{}\"", s)))
-            .map_err(|_| liquid_core::Error::with_msg("Malformed JSON string"))?;
+        let unescaped: String = serde_json::from_str(s_trimmed)
+            .or_else(|_| serde_json::from_str(s_trimmed.trim_matches('"')))
+            .or_else(|_| serde_json::from_str(&format!("\"{}\"", s_trimmed)))
+            .map_err(|e| liquid_core::Error::with_msg(format!("Malformed JSON string: {:?}", e)))?;
         Ok(Value::scalar(unescaped))
     }
+}
+
+#[derive(Clone, ParseFilter, FilterReflection)]
+#[filter(
+    name = "json_unescape",
+    description = "unescape a string that has been encoded as a JSON string.",
+    parsed(JsonUnescapeFilter)
+)]
+pub struct JsonUnescape;
+
+#[derive(Debug, Default, Display_filter)]
+#[name = "json_unescape"]
+struct JsonUnescapeFilter;
+impl Filter for JsonUnescapeFilter {
+    fn evaluate(&self, input: &dyn ValueView, _runtime: &dyn Runtime) -> Result<Value> {
+        if input.is_nil() {
+            return Ok(Value::Nil);
+        }
+        let s = input.to_kstr();
+        let s_trimmed = s.trim();
+
+        // Manual JSON unescape without strict type parsing
+        let unescaped = unescape_json_string(s_trimmed).map_err(|e| {
+            liquid_core::Error::with_msg(format!("Invalid JSON escape sequence: {}", e))
+        })?;
+        Ok(Value::scalar(unescaped))
+    }
+}
+
+// Helper function to manually unescape JSON string
+fn unescape_json_string(input: &str) -> Result<String, String> {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('"') => result.push('"'),
+                Some('\\') => result.push('\\'),
+                Some('/') => result.push('/'),
+                Some('b') => result.push('\u{0008}'), // backspace
+                Some('f') => result.push('\u{000C}'), // form feed
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('u') => {
+                    // Unicode escape sequence \uXXXX
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() != 4 {
+                        return Err("Invalid unicode escape sequence".to_string());
+                    }
+                    match u32::from_str_radix(&hex, 16) {
+                        Ok(code) => {
+                            if let Some(unicode_char) = char::from_u32(code) {
+                                result.push(unicode_char);
+                            } else {
+                                return Err("Invalid unicode code point".to_string());
+                            }
+                        }
+                        Err(_) => return Err("Invalid unicode escape sequence".to_string()),
+                    }
+                }
+                Some(other) => {
+                    return Err(format!("Invalid escape sequence: \\{}", other));
+                }
+                None => {
+                    return Err("Unexpected end of string after backslash".to_string());
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -79,8 +155,8 @@ mod tests {
             liquid_core::value!(r#"{\"a\":1,\"b\":2}"#)
         );
         assert_eq!(
-            liquid_core::call_filter!(JsonEncode, "[1,2,3]").unwrap(),
-            liquid_core::value!("[1,2,3]")
+            liquid_core::call_filter!(JsonEncode, "[\"1\",2,3]").unwrap(),
+            liquid_core::value!("[\\\"1\\\",2,3]")
         );
         assert_eq!(
             liquid_core::call_filter!(JsonEncode, "foo\nbar").unwrap(),
@@ -115,8 +191,8 @@ mod tests {
             liquid_core::value!(r#"{"a":1,"b":2}"#)
         );
         assert_eq!(
-            liquid_core::call_filter!(JsonDecode, "[1,2,3]").unwrap(),
-            liquid_core::value!("[1,2,3]")
+            liquid_core::call_filter!(JsonDecode, "[\\\"1\\\",2,3]").unwrap(),
+            liquid_core::value!("[\"1\",2,3]")
         );
         // 改行
         assert_eq!(
