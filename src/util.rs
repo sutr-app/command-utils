@@ -458,25 +458,25 @@ pub mod text {
         #[test]
         fn test_extract_url_simple() {
             let url = "https://www.google.com/";
-            let mes = format!("hello, <a href=\"{}\">fuga</a>", url);
+            let mes = format!("hello, <a href=\"{url}\">fuga</a>");
             assert_eq!(extract_url_simple(&mes), Some(url));
-            let mes = format!("\"{}\"", url);
+            let mes = format!("\"{url}\"");
             assert_eq!(extract_url_simple(&mes), Some(url));
-            let mes = format!("<\"{}\">", url);
+            let mes = format!("<\"{url}\">");
             assert_eq!(extract_url_simple(&mes), Some(url));
-            let mes = format!("\"<\"{}\">\"", url);
+            let mes = format!("\"<\"{url}\">\"");
             assert_eq!(extract_url_simple(&mes), Some(url));
         }
         #[test]
         fn test_extract_url_simple_with_queries() {
             let url = "https://www.google.com?q=hello&lang=en#top";
-            let mes = format!("hello, {}", url);
+            let mes = format!("hello, {url}");
             assert_eq!(extract_url_simple(&mes), Some(url));
-            let mes = format!("\"{}\"", url);
+            let mes = format!("\"{url}\"");
             assert_eq!(extract_url_simple(&mes), Some(url));
-            let mes = format!("<\"{}\">", url);
+            let mes = format!("<\"{url}\">");
             assert_eq!(extract_url_simple(&mes), Some(url));
-            let mes = format!("\"<\"{}\">\"", url);
+            let mes = format!("\"<\"{url}\">\"");
             assert_eq!(extract_url_simple(&mes), Some(url));
         }
 

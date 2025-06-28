@@ -82,17 +82,17 @@ pub async fn init_from_env_and_filename(
 pub fn shutdown_tracer_provider() {
     if let Some(provider) = GLOBAL_TRACER_PROVIDER.get() {
         let _ = provider.shutdown().inspect_err(|e| {
-            eprintln!("failed to shutdown tracer provider: {:?}", e);
+            eprintln!("failed to shutdown tracer provider: {e:?}");
         });
     }
     if let Some(provider) = GLOBAL_METER_PROVIDER.get() {
         let _ = provider.shutdown().inspect_err(|e| {
-            eprintln!("failed to shutdown meter provider: {:?}", e);
+            eprintln!("failed to shutdown meter provider: {e:?}");
         });
     }
     if let Some(provider) = GLOBAL_LOGGER_PROVIDER.get() {
         let _ = provider.shutdown().inspect_err(|e| {
-            eprintln!("failed to shutdown logger provider: {:?}", e);
+            eprintln!("failed to shutdown logger provider: {e:?}");
         });
     }
 }
@@ -154,7 +154,7 @@ async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<(
     let http_addr: Result<String> = env::var("OTLP_HTTP_ADDR").context("otlp http addr");
     let token: Option<String> = env::var("OTLP_AUTH_TOKEN").context("otlp addr").ok();
     // Basic Auth: base64(public_key:secret_key)
-    let auth_header = token.map(|t| format!("Basic {}", t));
+    let auth_header = token.map(|t| format!("Basic {t}"));
     match (addr, http_addr) {
         (Ok(addr), _) => {
             let mut metadata = tonic_types::metadata::MetadataMap::new();

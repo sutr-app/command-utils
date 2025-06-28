@@ -23,7 +23,7 @@ impl Filter for JsonEncodeFilter {
 
         let s = input.to_kstr();
         let json_escaped = serde_json::to_string(&s.to_string())
-            .map_err(|e| liquid_core::Error::with_msg(format!("Malformed JSON string: {:?}", e)))?;
+            .map_err(|e| liquid_core::Error::with_msg(format!("Malformed JSON string: {e:?}")))?;
         let trimmed = json_escaped.trim_matches('"');
         Ok(Value::scalar(trimmed.to_string()))
     }
@@ -51,8 +51,8 @@ impl Filter for JsonDecodeFilter {
         // そのままserde_jsonでデコード
         let unescaped: String = serde_json::from_str(s_trimmed)
             .or_else(|_| serde_json::from_str(s_trimmed.trim_matches('"')))
-            .or_else(|_| serde_json::from_str(&format!("\"{}\"", s_trimmed)))
-            .map_err(|e| liquid_core::Error::with_msg(format!("Malformed JSON string: {:?}", e)))?;
+            .or_else(|_| serde_json::from_str(&format!("\"{s_trimmed}\"")))
+            .map_err(|e| liquid_core::Error::with_msg(format!("Malformed JSON string: {e:?}")))?;
         Ok(Value::scalar(unescaped))
     }
 }
@@ -78,7 +78,7 @@ impl Filter for JsonUnescapeFilter {
 
         // Manual JSON unescape without strict type parsing
         let unescaped = unescape_json_string(s_trimmed).map_err(|e| {
-            liquid_core::Error::with_msg(format!("Invalid JSON escape sequence: {}", e))
+            liquid_core::Error::with_msg(format!("Invalid JSON escape sequence: {e}"))
         })?;
         Ok(Value::scalar(unescaped))
     }
@@ -118,7 +118,7 @@ fn unescape_json_string(input: &str) -> Result<String, String> {
                     }
                 }
                 Some(other) => {
-                    return Err(format!("Invalid escape sequence: \\{}", other));
+                    return Err(format!("Invalid escape sequence: \\{other}"));
                 }
                 None => {
                     return Err("Unexpected end of string after backslash".to_string());

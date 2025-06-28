@@ -188,7 +188,7 @@ impl<T: Clone + Debug + serde::Serialize> StackWithHistory<T> {
             let str_repr = match serde_json::to_value(item) {
                 Ok(serde_json::Value::String(s)) => s,
                 Ok(value) => value.to_string(),
-                Err(_) => format!("{:?}", item),
+                Err(_) => format!("{item:?}"),
             };
 
             // According to RFC-6901, '~' must be encoded as '~0' and '/' as '~1'

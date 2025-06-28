@@ -46,8 +46,8 @@ pub trait ProtobufDescriptorLoader {
         proto_name: &String,
         proto_string: &String,
     ) -> Result<(TempDir, PathBuf)> {
-        let temp_dir = tempfile::tempdir()
-            .context(format!("on creating tempfile for proto: {}", proto_name))?;
+        let temp_dir =
+            tempfile::tempdir().context(format!("on creating tempfile for proto: {proto_name}"))?;
         let tempfile = temp_dir.path().join(proto_name);
         // For now we need to write files to the disk.
         fs::write(&tempfile, proto_string).context(format!(
@@ -152,7 +152,7 @@ impl ProtobufDescriptor {
     }
     pub fn print_dynamic_message(message: &DynamicMessage, byte_to_string: bool) {
         let message_str = Self::dynamic_message_to_string(message, byte_to_string);
-        println!("{}", message_str);
+        println!("{message_str}");
     }
     pub fn dynamic_message_to_string(message: &DynamicMessage, byte_to_string: bool) -> String {
         message
@@ -168,29 +168,29 @@ impl ProtobufDescriptor {
     }
     fn value_to_string(v: &prost_reflect::Value, byte_to_string: bool) -> String {
         match v {
-            prost_reflect::Value::Bool(v) => format!("{}", v),
-            prost_reflect::Value::I32(v) => format!("{}", v),
-            prost_reflect::Value::I64(v) => format!("{}", v),
-            prost_reflect::Value::U32(v) => format!("{}", v),
-            prost_reflect::Value::U64(v) => format!("{}", v),
-            prost_reflect::Value::F32(v) => format!("{}", v),
-            prost_reflect::Value::F64(v) => format!("{}", v),
+            prost_reflect::Value::Bool(v) => format!("{v}"),
+            prost_reflect::Value::I32(v) => format!("{v}"),
+            prost_reflect::Value::I64(v) => format!("{v}"),
+            prost_reflect::Value::U32(v) => format!("{v}"),
+            prost_reflect::Value::U64(v) => format!("{v}"),
+            prost_reflect::Value::F32(v) => format!("{v}"),
+            prost_reflect::Value::F64(v) => format!("{v}"),
             prost_reflect::Value::String(v) => v.to_string(),
             prost_reflect::Value::Bytes(v) => {
                 if byte_to_string {
                     format!("{}", String::from_utf8_lossy(v))
                 } else {
-                    format!("{:x?}", v)
+                    format!("{v:x?}")
                 }
             }
-            prost_reflect::Value::EnumNumber(v) => format!("{:?}[enum]", v),
+            prost_reflect::Value::EnumNumber(v) => format!("{v:?}[enum]"),
             prost_reflect::Value::Message(v) => Self::dynamic_message_to_string(v, byte_to_string),
             prost_reflect::Value::List(v) => {
                 let list_str = v
                     .iter()
                     .map(|v| Self::value_to_string(v, byte_to_string))
                     .join(", ");
-                format!("[{}]", list_str)
+                format!("[{list_str}]")
             }
             prost_reflect::Value::Map(hash_map) => {
                 let map_str = hash_map
@@ -203,17 +203,17 @@ impl ProtobufDescriptor {
                         )
                     })
                     .join(", ");
-                format!("{{{}}}", map_str)
+                format!("{{{map_str}}}")
             }
         }
     }
     fn map_key_to_string(k: &prost_reflect::MapKey) -> String {
         match k {
-            prost_reflect::MapKey::Bool(v) => format!("{}", v),
-            prost_reflect::MapKey::I32(v) => format!("{}", v),
-            prost_reflect::MapKey::I64(v) => format!("{}", v),
-            prost_reflect::MapKey::U32(v) => format!("{}", v),
-            prost_reflect::MapKey::U64(v) => format!("{}", v),
+            prost_reflect::MapKey::Bool(v) => format!("{v}"),
+            prost_reflect::MapKey::I32(v) => format!("{v}"),
+            prost_reflect::MapKey::I64(v) => format!("{v}"),
+            prost_reflect::MapKey::U32(v) => format!("{v}"),
+            prost_reflect::MapKey::U64(v) => format!("{v}"),
             prost_reflect::MapKey::String(v) => v.to_string(),
         }
     }
@@ -282,7 +282,7 @@ mod tests {
             .unwrap();
         job_descriptor
             .fields()
-            .for_each(|field| println!("field:{:?}", field));
+            .for_each(|field| println!("field:{field:?}"));
         assert_eq!(job_descriptor.full_name(), "jobworkerp.data.Job");
         assert_eq!(job_descriptor.package_name(), "jobworkerp.data");
         assert_eq!(job_descriptor.name(), "Job");
@@ -387,7 +387,7 @@ message TestArg {
                 .unwrap(),
             cursor,
         )?;
-        println!("message:{:?}", mes);
+        println!("message:{mes:?}");
         std::io::stdout().flush()?;
         assert_eq!(message, mes);
         assert_eq!(
