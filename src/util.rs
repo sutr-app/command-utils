@@ -399,21 +399,21 @@ pub mod text {
         re.captures(message)
             .and_then(|c| c.get(1).map(|s| s.as_str()))
     }
-    /// 文字列を指定された区切り文字または最大長で分割する
+    /// Split text by specified delimiters or maximum length
     ///
     /// # Arguments
-    /// * `text` - 分割する文字列
-    /// * `max_length` - 各部分の最大長（バイト単位）
-    /// * `delimiters` - 区切り文字（優先順位順）
+    /// * `text` - Text to split
+    /// * `max_length` - Maximum length of each part (in bytes)
+    /// * `delimiters` - Delimiter characters (in priority order)
     ///
     /// # Returns
-    /// * `Result<Vec<String>>` - 分割された文字列
+    /// * `Result<Vec<String>>` - Split text strings
     pub fn split_text(text: &str, max_chars: usize, delimiters: &[&str]) -> Result<Vec<String>> {
         let mut parts = Vec::new();
         let mut char_start = 0;
         let char_count = text.chars().count();
 
-        // 文字位置からバイト位置へのマッピングを作成
+        // Create character position to byte position mapping
         let char_byte_positions: Vec<usize> =
             text.char_indices().map(|(byte_pos, _)| byte_pos).collect();
 
@@ -425,7 +425,7 @@ pub mod text {
                 .copied()
                 .unwrap_or(text.len());
 
-            // 区切り文字による分割を試みる
+            // Try splitting by delimiter characters
             let mut split_end = byte_end;
             if char_end < char_count {
                 let substr = &text[byte_start..byte_end];
@@ -437,14 +437,14 @@ pub mod text {
                 }
             }
 
-            // 有効な部分文字列を追加
+            // Add valid substring
             if split_end > byte_start {
                 parts.push(text[byte_start..split_end].to_string());
             } else {
                 return Err(anyhow!("Invalid text splitting position"));
             }
 
-            // 次の開始位置を設定
+            // Set next start position
             char_start = text[..split_end].chars().count();
         }
 
@@ -507,7 +507,7 @@ pub mod text {
                 parts,
                 vec!["あいうiえ", "お😁かきく", "jけこ🤨さ", "しすkせそ", "."]
             );
-            // parts内の最後の要素を見て一定長より短い文字列の場合はpartsから削除する
+            // Remove the last element from parts if it's shorter than a certain length
             if let Some(last_part) = parts.last() {
                 if last_part.chars().count() < 3 {
                     parts.pop();
