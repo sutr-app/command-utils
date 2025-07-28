@@ -16,7 +16,7 @@ pub trait ProtobufDescriptorLoader {
             Self::_store_temp_proto_file(&"temp.proto".to_string(), proto_string)
                 .context("on storing temp proto file")?;
         let descriptor_file = tempdir.path().join("descriptor.bin");
-        tonic_build::configure()
+        tonic_prost_build::configure()
             // only output message descriptor
             .build_server(false)
             .build_client(false)
@@ -25,7 +25,7 @@ pub trait ProtobufDescriptorLoader {
             .protoc_arg("--experimental_allow_proto3_optional")
             .file_descriptor_set_path(&descriptor_file) // for reflection
             .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-            .compile_protos(&[&tempfile], &[&tempdir])
+            .compile_protos(&[&tempfile], &[&tempdir.path().to_path_buf()])
             .context(format!("Failed to compile protos {:?}", &tempfile))?;
 
         let descriptor = Self::_load_protobuf_descriptor(&descriptor_file)?;

@@ -34,16 +34,16 @@ opentelemetry-appender-tracing = { version = "0.30" }
 opentelemetry-stdout = { version = "0.30" }
 opentelemetry-zipkin = { version = "0.30", features = ["reqwest-client"] }
 pnet = { version = "0.35" }
-prost = "0.13"
-prost-reflect = { version = "0.15", features = ["serde"] }
-prost-reflect-build = "0.15"
+prost = "0.14"
+prost-reflect = { version = "0.16", features = ["serde"] }
+prost-reflect-build = "0.16"
 rand = { version = "0.9" }
 regex = { version = "1" }
 rs-snowflake = { version = "0.6" }
 serde = { version = "1" }
 serde_json = "1.0"
 tempfile = "3"
-tonic-build = { version = "0.13" }
+tonic-prost-build = { version = "0.14" }
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1" }
 tracing-opentelemetry = { version = "0.31" }
