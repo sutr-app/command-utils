@@ -295,9 +295,10 @@ pub mod string {
 // }
 
 pub mod datetime {
-    use anyhow::{anyhow, Result};
-    use chrono::{DateTime, FixedOffset, LocalResult, TimeZone, Utc};
+    use anyhow::{anyhow, Context, Result};
+    use chrono::{DateTime, Datelike, FixedOffset, LocalResult, TimeZone, Utc};
     use once_cell::sync::Lazy;
+    use regex::Regex;
 
     pub static OFFSET_SEC: Lazy<i32> = Lazy::<i32>::new(|| {
         std::env::var("TZ_OFFSET_HOURS")
@@ -386,6 +387,44 @@ pub mod datetime {
             )),
         }
         //.ymd(year, month, day).and_hms(hour, min, sec)
+    }
+    // ymdhms regex  (sequencial)
+    pub fn parse_datetime_ymdhms(
+        dt_value: &str,
+        datetime_regex: &Option<String>,
+    ) -> Result<Option<DateTime<FixedOffset>>, anyhow::Error> {
+        std::panic::catch_unwind(move || {
+            let dt = match datetime_regex {
+                Some(fmt) if !fmt.is_empty() => {
+                    let now = self::now();
+                    Regex::new(fmt.as_str())
+                        .map(|dt_re| {
+                            dt_re.captures(dt_value).and_then(|c| {
+                                // XXX fixed sequence(ymdhms)
+                                self::ymdhms(
+                                    c.get(1).map_or(now.year(), |r| r.as_str().parse().unwrap()),
+                                    c.get(2).map_or(0u32, |r| r.as_str().parse().unwrap()),
+                                    c.get(3).map_or(0u32, |r| r.as_str().parse().unwrap()),
+                                    c.get(4).map_or(0u32, |r| r.as_str().parse().unwrap()),
+                                    c.get(5).map_or(0u32, |r| r.as_str().parse().unwrap()),
+                                    c.get(6).map_or(0u32, |r| r.as_str().parse().unwrap()),
+                                )
+                            })
+                        })
+                        .context("on parse by datetime regex")
+                }
+                _ => DateTime::parse_from_rfc3339(dt_value)
+                    .or_else(|_| DateTime::parse_from_str(dt_value, "%+"))
+                    .map(Some)
+                    .context("on parse rf3339"),
+            };
+            dt
+        })
+        .map_err(|e| {
+            tracing::error!("caught panic: {:?}", e);
+            anyhow!("error in parsing datetime: {:?}", e)
+        })
+        .and_then(|dt| dt) // flatten
     }
 }
 pub mod text {
