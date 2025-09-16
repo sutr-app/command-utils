@@ -12,16 +12,16 @@ chardet = "0.2"
 chrono = { version = "0.4" }
 encoding = "0.2"
 envy = { version = "0.4" }
-flate2 = { version = "1.0", features = ["miniz_oxide"] }
+# flate2 = { version = "1.0", features = ["miniz_oxide"] }
 futures = { version = "0.3" }
-http = { version = "1" }
+# http = { version = "1" }
 itertools = "0.14"
 jaq-core = { version = "2" }
 jaq-json = { version = "1", features = ["serde_json"] }
 jaq-std = { version = "2" }
-liquid = "0.26"
-liquid-core = "0.26"
-liquid-lib = "0.26"
+# liquid = "0.26"
+liquid-core = { version = "0.26", features = ["derive"] }
+# liquid-lib = "0.26"
 liquid-derive = "0.26"
 once_cell = { version = "1" }
 opentelemetry = { version = "0.30" }
@@ -31,6 +31,8 @@ opentelemetry-semantic-conventions = { version = "0.30", features = [
     "semconv_experimental",
 ] }
 opentelemetry-appender-tracing = { version = "0.30" }
+# https://github.com/open-telemetry/opentelemetry-rust/issues/3169
+opentelemetry-proto = "=0.30.0"
 opentelemetry-stdout = { version = "0.30" }
 opentelemetry-zipkin = { version = "0.30", features = ["reqwest-client"] }
 pnet = { version = "0.35" }
