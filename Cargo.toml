@@ -26,7 +26,12 @@ liquid-derive = "0.26"
 once_cell = { version = "1" }
 opentelemetry = { version = "0.30" }
 opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic", "metrics"] }
+opentelemetry-otlp = { version = "0.30", default-features = false, features = [
+    "grpc-tonic",
+    "metrics",
+    "logs",
+    "trace",
+] }
 opentelemetry-semantic-conventions = { version = "0.30", features = [
     "semconv_experimental",
 ] }
@@ -34,7 +39,9 @@ opentelemetry-appender-tracing = { version = "0.30" }
 # https://github.com/open-telemetry/opentelemetry-rust/issues/3169
 opentelemetry-proto = "=0.30.0"
 opentelemetry-stdout = { version = "0.30" }
-opentelemetry-zipkin = { version = "0.30", features = ["reqwest-client"] }
+opentelemetry-zipkin = { version = "0.30", default-features = false, features = [
+    "reqwest-rustls",
+] }
 pnet = { version = "0.35" }
 prost = "0.14"
 prost-reflect = { version = "0.16", features = ["serde"] }
@@ -55,6 +62,10 @@ tracing-subscriber = { version = "0.3", features = [
     "env-filter",
     "json",
 ] }
+
+[features]
+default = ["otlp-http"]
+otlp-http = ["opentelemetry-otlp/http-proto"]
 
 [dev-dependencies]
 itertools = { version = "0.14" }

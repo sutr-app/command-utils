@@ -8,6 +8,7 @@ use opentelemetry_otlp::LogExporter;
 use opentelemetry_otlp::MetricExporter;
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_otlp::WithExportConfig;
+#[cfg(feature = "otlp-http")]
 use opentelemetry_otlp::WithHttpConfig;
 use opentelemetry_otlp::WithTonicConfig;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
@@ -16,6 +17,7 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_semantic_conventions::resource::{DEPLOYMENT_ENVIRONMENT_NAME, SERVICE_VERSION};
 use serde::Deserialize;
+#[cfg(feature = "otlp-http")]
 use std::collections::HashMap;
 use std::env;
 use std::fs::File;
@@ -197,31 +199,41 @@ async fn set_otlp_tracer_provider_from_env(app_service_name: String) -> Result<(
             Ok(())
         }
         (_, Ok(http_addr)) => {
-            let mut headers = HashMap::new();
-            if let Some(auth) = auth_header {
-                headers.insert("Authorization".to_string(), auth);
+            #[cfg(feature = "otlp-http")]
+            {
+                let mut headers = HashMap::new();
+                if let Some(auth) = auth_header {
+                    headers.insert("Authorization".to_string(), auth);
+                }
+
+                let exporter = SpanExporter::builder()
+                    .with_http()
+                    .with_endpoint(&http_addr)
+                    .with_timeout(Duration::from_secs(10))
+                    .with_headers(headers)
+                    .build()?;
+
+                let provider = SdkTracerProvider::builder()
+                    .with_resource(resource(app_service_name.clone()))
+                    // .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
+                    //     opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
+                    // )))
+                    // .with_id_generator(opentelemetry_sdk::trace::RandomIdGenerator::default())
+                    .with_batch_exporter(exporter)
+                    .build();
+
+                global::set_tracer_provider(provider.clone());
+                GLOBAL_TRACER_PROVIDER.set(provider).ok();
+                global::set_text_map_propagator(TraceContextPropagator::new());
+                // Ok(Some(provider))
+                Ok(())
             }
-
-            let exporter = SpanExporter::builder()
-                .with_http()
-                .with_endpoint(&http_addr)
-                .with_timeout(Duration::from_secs(10))
-                .with_headers(headers)
-                .build()?;
-
-            let provider = SdkTracerProvider::builder()
-                .with_resource(resource(app_service_name.clone()))
-                // .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
-                //     opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
-                // )))
-                // .with_id_generator(opentelemetry_sdk::trace::RandomIdGenerator::default())
-                .with_batch_exporter(exporter)
-                .build();
-            global::set_tracer_provider(provider.clone());
-            GLOBAL_TRACER_PROVIDER.set(provider).ok();
-            global::set_text_map_propagator(TraceContextPropagator::new());
-            // Ok(Some(provider))
-            Ok(())
+            #[cfg(not(feature = "otlp-http"))]
+            {
+                return Err(anyhow::anyhow!(
+                    "HTTP OTLP export not enabled. Compile with 'otlp-http' feature."
+                ));
+            }
         }
         (_, _) => {
             // not specified
@@ -250,11 +262,23 @@ async fn create_otlp_logger_provider_layer_from_env(
                     .with_endpoint(&log_endpoint)
                     .with_timeout(Duration::from_secs(10))
                     .build(),
-                "http" | "http/protobuf" => builder
-                    .with_http()
-                    .with_endpoint(&log_endpoint)
-                    .with_timeout(Duration::from_secs(10))
-                    .build(),
+                "http" | "http/protobuf" => {
+                    #[cfg(feature = "otlp-http")]
+                    {
+                        builder
+                            .with_http()
+                            .with_endpoint(&log_endpoint)
+                            .with_timeout(Duration::from_secs(10))
+                            .build()
+                    }
+                    #[cfg(not(feature = "otlp-http"))]
+                    {
+                        tracing::warn!(
+                            "HTTP OTLP export not enabled. Compile with 'otlp-http' feature."
+                        );
+                        return None;
+                    }
+                }
                 "auto" => {
                     // Try gRPC first, fall back to HTTP if it fails
                     let grpc_result = builder
@@ -268,11 +292,19 @@ async fn create_otlp_logger_provider_layer_from_env(
                             "gRPC log exporter failed, trying HTTP: {:?}",
                             grpc_result.err()
                         );
-                        builder
-                            .with_http()
-                            .with_endpoint(&log_endpoint)
-                            .with_timeout(Duration::from_secs(10))
-                            .build()
+                        #[cfg(feature = "otlp-http")]
+                        {
+                            builder
+                                .with_http()
+                                .with_endpoint(&log_endpoint)
+                                .with_timeout(Duration::from_secs(10))
+                                .build()
+                        }
+                        #[cfg(not(feature = "otlp-http"))]
+                        {
+                            tracing::warn!("gRPC failed and HTTP OTLP export not enabled. Compile with 'otlp-http' feature for HTTP fallback.");
+                            return None;
+                        }
                     } else {
                         grpc_result
                     }
