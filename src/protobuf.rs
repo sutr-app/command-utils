@@ -98,8 +98,7 @@ impl ProtobufDescriptor {
         let message_descriptor = self
             .get_message_by_name(message_name)
             .ok_or(anyhow::anyhow!(
-                "message not found by name: {}",
-                message_name
+                "message not found by name: {message_name}"
             ))?;
         Self::get_message_from_json(message_descriptor, json)
     }
@@ -119,8 +118,7 @@ impl ProtobufDescriptor {
         let message_descriptor = self
             .get_message_by_name(message_name)
             .ok_or(anyhow::anyhow!(
-                "message not found by name: {}",
-                message_name
+                "message not found by name: {message_name}"
             ))?;
         Self::get_message_from_bytes(message_descriptor, bytes)
     }

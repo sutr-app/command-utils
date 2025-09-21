@@ -37,7 +37,7 @@ impl IDGenerator {
             IDGenerator::Snowflake(generator) => generator
                 .lock()
                 .map(|mut g| g.get_id())
-                .map_err(|e| anyhow!(format!("generate id error: {:?}", e))),
+                .map_err(|e| anyhow!(format!("generate id error: {e:?}"))),
             IDGenerator::Mock(generator) => Ok(generator.generate_id()),
         }
     }

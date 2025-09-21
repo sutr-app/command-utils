@@ -376,14 +376,7 @@ pub mod datetime {
         match TZ_OFFSET.with_ymd_and_hms(year, month, day, hour, min, sec) {
             LocalResult::Single(res) => Ok(res),
             e => Err(anyhow!(
-                "ymdhms error: {}-{}-{} {}:{}:{}, {:?}",
-                year,
-                month,
-                day,
-                hour,
-                min,
-                sec,
-                e
+                "ymdhms error: {year}-{month}-{day} {hour}:{min}:{sec}, {e:?}"
             )),
         }
         //.ymd(year, month, day).and_hms(hour, min, sec)
@@ -422,7 +415,7 @@ pub mod datetime {
         })
         .map_err(|e| {
             tracing::error!("caught panic: {:?}", e);
-            anyhow!("error in parsing datetime: {:?}", e)
+            anyhow!("error in parsing datetime: {e:?}")
         })
         .and_then(|dt| dt) // flatten
     }

@@ -14,7 +14,7 @@ where
     // read file
     input
         .read_to_end(&mut reader)
-        .map_err(|e| anyhow!("Could not read file: {}", e))?;
+        .map_err(|e| anyhow!("Could not read file: {e}"))?;
 
     encode_to_utf8_raw(&reader)
 }
@@ -30,7 +30,7 @@ pub fn encode_to_utf8_raw(input: &[u8]) -> Result<String> {
     let coder = encoding_from_whatwg_label(chardet::charset2encoding(&result.0));
     if let Some(c) = coder {
         c.decode(input, DecoderTrap::Ignore)
-            .map_err(|e| anyhow!("Error:{:?}", e))
+            .map_err(|e| anyhow!("Error:{e:?}"))
     } else {
         Err(anyhow!("cannot find character encodings: {:?}", &result))
     }
