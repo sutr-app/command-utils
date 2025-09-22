@@ -1107,7 +1107,6 @@ mod tests {
         let config = HierarchicalChunkingConfig {
             max_chunk_tokens: 10,
             min_chunk_tokens: 5, // Set appropriate min value
-            max_char_length_fallback: Some(20),
             ..Default::default()
         };
         let token_provider = MockTokenProvider;
@@ -1404,7 +1403,6 @@ mod tests {
             enable_paragraph_merging: false,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            max_char_length_fallback: Some(30), // Small character limit
             ..Default::default()
         };
         let token_provider = MockTokenProvider;
@@ -1445,7 +1443,6 @@ mod tests {
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            max_char_length_fallback: Some(40),
             ..Default::default()
         };
         let token_provider = MockTokenProvider;
@@ -1565,7 +1562,6 @@ mod tests {
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            preserve_paragraph_boundaries: true,
             ..Default::default()
         };
         let token_provider = MockTokenProvider;

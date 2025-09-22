@@ -46,10 +46,6 @@ pub struct HierarchicalChunkingConfig {
     pub enable_sentence_splitting: bool,
     /// Enable forced splitting when sentence splitting is insufficient
     pub enable_forced_splitting: bool,
-    /// Preserve paragraph boundaries whenever possible
-    pub preserve_paragraph_boundaries: bool,
-    /// Maximum character length for forced splits (fallback when no tokenizer)
-    pub max_char_length_fallback: Option<usize>,
 }
 
 impl Default for HierarchicalChunkingConfig {
@@ -60,8 +56,6 @@ impl Default for HierarchicalChunkingConfig {
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            preserve_paragraph_boundaries: true,
-            max_char_length_fallback: Some(4000), // Rough estimate for 1024 tokens
         }
     }
 }
@@ -71,12 +65,10 @@ impl HierarchicalChunkingConfig {
     pub fn for_embedding(max_tokens: usize) -> Self {
         Self {
             max_chunk_tokens: max_tokens,
-            min_chunk_tokens: (max_tokens as f32 * 0.1) as usize, // 10% of max
+            min_chunk_tokens: 5 as usize, // very small minimum to allow small chunks
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            preserve_paragraph_boundaries: true,
-            max_char_length_fallback: Some(max_tokens * 4), // Rough 4 chars per token
         }
     }
 
@@ -88,8 +80,6 @@ impl HierarchicalChunkingConfig {
             enable_paragraph_merging: false, // Skip merging for speed
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            preserve_paragraph_boundaries: false, // Allow faster splitting
-            max_char_length_fallback: Some(2000),
         }
     }
 
@@ -101,8 +91,6 @@ impl HierarchicalChunkingConfig {
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            preserve_paragraph_boundaries: true,
-            max_char_length_fallback: Some(6000),
         }
     }
 
@@ -120,20 +108,10 @@ impl HierarchicalChunkingConfig {
             return Err("At least one splitting method must be enabled".to_string());
         }
 
-        if let Some(char_limit) = self.max_char_length_fallback {
-            if char_limit == 0 {
-                return Err("max_char_length_fallback must be greater than 0 if set".to_string());
-            }
-        }
 
         Ok(())
     }
 
-    /// Get effective character limit for fallback splitting
-    pub fn effective_char_limit(&self) -> usize {
-        self.max_char_length_fallback
-            .unwrap_or(self.max_chunk_tokens * 4)
-    }
 }
 
 /// Strategy for chunking when no token provider is available
@@ -520,8 +498,6 @@ mod tests {
         assert!(config.enable_paragraph_merging);
         assert!(config.enable_sentence_splitting);
         assert!(config.enable_forced_splitting);
-        assert!(config.preserve_paragraph_boundaries);
-        assert_eq!(config.max_char_length_fallback, Some(4000));
     }
 
     #[test]
@@ -543,15 +519,14 @@ mod tests {
         assert!(config.validate().is_err());
 
         config.enable_forced_splitting = true;
-        config.max_char_length_fallback = Some(0);
-        assert!(config.validate().is_err());
+        assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_preset_configs() {
         let embedding_config = HierarchicalChunkingConfig::for_embedding(512);
         assert_eq!(embedding_config.max_chunk_tokens, 512);
-        assert_eq!(embedding_config.min_chunk_tokens, 51); // 10% of 512
+        assert_eq!(embedding_config.min_chunk_tokens, 5); // Fixed minimum for small chunks
 
         let speed_config = HierarchicalChunkingConfig::for_speed();
         assert_eq!(speed_config.max_chunk_tokens, 512);
@@ -562,22 +537,6 @@ mod tests {
         assert_eq!(quality_config.min_chunk_tokens, 100);
     }
 
-    #[test]
-    fn test_effective_char_limit() {
-        let config = HierarchicalChunkingConfig {
-            max_chunk_tokens: 1000,
-            max_char_length_fallback: Some(3000),
-            ..Default::default()
-        };
-        assert_eq!(config.effective_char_limit(), 3000);
-
-        let config_no_fallback = HierarchicalChunkingConfig {
-            max_chunk_tokens: 1000,
-            max_char_length_fallback: None,
-            ..Default::default()
-        };
-        assert_eq!(config_no_fallback.effective_char_limit(), 4000); // 1000 * 4
-    }
 
     #[test]
     fn test_mock_token_provider() {
