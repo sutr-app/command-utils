@@ -71,9 +71,7 @@ impl SchemaCombiner {
     #[allow(dead_code)]
     pub fn add_description(&mut self, name: &str, description: String) -> Result<()> {
         if !self.schemas.contains_key(name) {
-            return Err(anyhow::anyhow!(
-                "Schema with name '{name}' does not exist"
-            ));
+            return Err(anyhow::anyhow!("Schema with name '{name}' does not exist"));
         }
 
         self.descriptions.insert(name.to_string(), description);

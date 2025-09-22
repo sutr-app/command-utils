@@ -97,9 +97,7 @@ impl ProtobufDescriptor {
     ) -> Result<DynamicMessage> {
         let message_descriptor = self
             .get_message_by_name(message_name)
-            .ok_or(anyhow::anyhow!(
-                "message not found by name: {message_name}"
-            ))?;
+            .ok_or(anyhow::anyhow!("message not found by name: {message_name}"))?;
         Self::get_message_from_json(message_descriptor, json)
     }
     pub fn get_message_from_bytes(
@@ -117,9 +115,7 @@ impl ProtobufDescriptor {
     ) -> Result<DynamicMessage> {
         let message_descriptor = self
             .get_message_by_name(message_name)
-            .ok_or(anyhow::anyhow!(
-                "message not found by name: {message_name}"
-            ))?;
+            .ok_or(anyhow::anyhow!("message not found by name: {message_name}"))?;
         Self::get_message_from_bytes(message_descriptor, bytes)
     }
     pub fn decode_from_json<T: ReflectMessage + Default>(json: impl AsRef<str>) -> Result<T> {

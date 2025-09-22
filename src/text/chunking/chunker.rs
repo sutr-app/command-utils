@@ -448,6 +448,8 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
 
     /// Apply forced splitting when other methods fail (Level 3 processing)
     fn apply_forced_splitting(&mut self, text: &str) -> Result<Vec<HierarchicalChunk>> {
+        use crate::text::chunking::sliding_window::SlidingWindowCalculator;
+
         if !self.config.enable_forced_splitting {
             return Err(HierarchicalChunkingError::configuration(
                 "Forced splitting is disabled but required".to_string(),
@@ -457,92 +459,77 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
         debug!("Applying forced splitting to text of {} chars", text.len());
         let forced_start = Instant::now();
 
+        // Get total token count for the text
+        let tokens = self.tokenize_text(text)?;
+        let total_token_count = tokens.len();
+
+        // Calculate sliding window positions with no overlap (stride = max_chunk_tokens)
+        let window_positions = SlidingWindowCalculator::calculate_sliding_windows(
+            total_token_count,
+            0,                               // No instruction length for forced splitting
+            self.config.max_chunk_tokens,    // Maximum tokens per chunk
+            self.config.max_chunk_tokens,    // Stride = max_chunk_tokens (no overlap)
+            self.config.min_chunk_tokens,    // Minimum chunk size
+        )?;
+
         let mut chunks = Vec::new();
-        let chars: Vec<char> = text.chars().collect();
-        let mut start_pos = 0;
 
-        while start_pos < chars.len() {
-            let end_pos = self.find_forced_split_position(&chars, start_pos)?;
+        // Convert token positions to character positions and create chunks
+        for (chunk_idx, (token_start, token_end)) in window_positions.iter().enumerate() {
+            // Simple approximation: map token positions to character positions
+            // This is not perfectly accurate but sufficient for forced splitting
+            let char_start = (token_start * text.len()) / total_token_count;
+            let char_end = std::cmp::min((token_end * text.len()) / total_token_count, text.len());
 
-            let chunk_text: String = chars[start_pos..end_pos].iter().collect();
-            let tokens = self.tokenize_text(&chunk_text)?;
+            // Ensure we have valid character boundaries
+            let char_start = self.find_char_boundary(text, char_start);
+            let char_end = self.find_char_boundary(text, char_end);
+
+            if char_start >= char_end {
+                continue; // Skip invalid chunks
+            }
+
+            let chunk_text = text[char_start..char_end].to_string();
+            let chunk_tokens = self.tokenize_text(&chunk_text)?;
 
             let chunk = self.create_chunk(
                 chunk_text,
-                tokens,
-                start_pos,
-                end_pos,
+                chunk_tokens,
+                char_start,
+                char_end,
                 ChunkType::ForcedSplit,
-                chunks.len(),
+                chunk_idx,
             );
             chunks.push(chunk);
-
-            start_pos = end_pos;
         }
 
         self.statistics
             .record_forced_splitting_time(forced_start.elapsed());
-        debug!("Created {} forced split chunks", chunks.len());
+        debug!("Created {} forced split chunks using sliding window", chunks.len());
         Ok(chunks)
     }
 
-    /// Find optimal position for forced splitting based on token count
-    fn find_forced_split_position(&mut self, chars: &[char], start_pos: usize) -> Result<usize> {
-        let remaining_chars = chars.len() - start_pos;
-
-        if remaining_chars == 0 {
-            return Ok(chars.len());
+    /// Find the nearest valid character boundary for string slicing
+    fn find_char_boundary(&self, text: &str, approx_pos: usize) -> usize {
+        if approx_pos >= text.len() {
+            return text.len();
         }
 
-        // Start with a conservative estimate based on token limit
-        let initial_estimate = std::cmp::min(
-            start_pos + (self.config.max_chunk_tokens * 3), // Conservative 3 chars per token
-            chars.len(),
-        );
+        // Find the nearest valid UTF-8 boundary
+        let mut pos = approx_pos;
+        while pos < text.len() && !text.is_char_boundary(pos) {
+            pos += 1;
+        }
 
-        // Binary search to find the maximum position that fits within token limit
-        let mut low = start_pos + 1;
-        let mut high = initial_estimate;
-        let mut best_pos = low;
-
-        while low <= high {
-            let mid = (low + high) / 2;
-            let test_text: String = chars[start_pos..mid].iter().collect();
-
-            match self.calculate_token_count(&test_text) {
-                Ok(token_count) if token_count <= self.config.max_chunk_tokens => {
-                    best_pos = mid;
-                    low = mid + 1;
-                }
-                Ok(_) => {
-                    high = mid - 1;
-                }
-                Err(_) => {
-                    // If tokenization fails, fall back to character estimation
-                    high = mid - 1;
-                }
+        // If we went too far, try going backward
+        if pos >= text.len() {
+            pos = approx_pos;
+            while pos > 0 && !text.is_char_boundary(pos) {
+                pos -= 1;
             }
         }
 
-        // Try to find a good breaking point near the optimal position
-        let search_range = 20; // Search within 20 characters
-        let search_start = best_pos.saturating_sub(search_range);
-        let search_end = std::cmp::min(best_pos + search_range, chars.len());
-
-        // Look for good break characters in reverse order from best position
-        for i in (search_start..std::cmp::min(best_pos, search_end)).rev() {
-            if chars[i].is_whitespace() || "。！？.!?、,".contains(chars[i]) {
-                let test_text: String = chars[start_pos..i + 1].iter().collect();
-                if let Ok(token_count) = self.calculate_token_count(&test_text) {
-                    if token_count <= self.config.max_chunk_tokens {
-                        return Ok(i + 1);
-                    }
-                }
-            }
-        }
-
-        // If no good break point found, use the best position we found
-        Ok(best_pos)
+        pos
     }
 
     /// Merge small paragraphs (Level 3 processing)
