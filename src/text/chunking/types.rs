@@ -9,9 +9,9 @@ pub struct HierarchicalChunk {
     pub content: String,
     /// Token IDs (provided by TokenProvider)
     pub tokens: Vec<u32>,
-    /// Character start position in original text
+    /// Character start position in original text (Unicode character count)
     pub char_start: usize,
-    /// Character end position in original text
+    /// Character end position in original text (Unicode character count)
     pub char_end: usize,
     /// Type of chunking applied
     pub chunk_type: ChunkType,

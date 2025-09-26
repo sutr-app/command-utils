@@ -52,7 +52,7 @@ impl Default for HierarchicalChunkingConfig {
     fn default() -> Self {
         Self {
             max_chunk_tokens: 1024,
-            min_chunk_tokens: 50,
+            min_chunk_tokens: 0,
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
@@ -65,7 +65,7 @@ impl HierarchicalChunkingConfig {
     pub fn for_embedding(max_tokens: usize) -> Self {
         Self {
             max_chunk_tokens: max_tokens,
-            min_chunk_tokens: 5 as usize, // very small minimum to allow small chunks
+            min_chunk_tokens: 0 as usize, // very small minimum to allow small chunks
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
@@ -76,7 +76,7 @@ impl HierarchicalChunkingConfig {
     pub fn for_speed() -> Self {
         Self {
             max_chunk_tokens: 512,
-            min_chunk_tokens: 20,
+            min_chunk_tokens: 0,
             enable_paragraph_merging: false, // Skip merging for speed
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
@@ -87,7 +87,7 @@ impl HierarchicalChunkingConfig {
     pub fn for_quality() -> Self {
         Self {
             max_chunk_tokens: 1536,
-            min_chunk_tokens: 100,
+            min_chunk_tokens: 0,
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
@@ -108,10 +108,8 @@ impl HierarchicalChunkingConfig {
             return Err("At least one splitting method must be enabled".to_string());
         }
 
-
         Ok(())
     }
-
 }
 
 /// Strategy for chunking when no token provider is available
@@ -494,7 +492,7 @@ mod tests {
     fn test_default_config() {
         let config = HierarchicalChunkingConfig::default();
         assert_eq!(config.max_chunk_tokens, 1024);
-        assert_eq!(config.min_chunk_tokens, 50);
+        assert_eq!(config.min_chunk_tokens, 0);
         assert!(config.enable_paragraph_merging);
         assert!(config.enable_sentence_splitting);
         assert!(config.enable_forced_splitting);
@@ -526,7 +524,7 @@ mod tests {
     fn test_preset_configs() {
         let embedding_config = HierarchicalChunkingConfig::for_embedding(512);
         assert_eq!(embedding_config.max_chunk_tokens, 512);
-        assert_eq!(embedding_config.min_chunk_tokens, 5); // Fixed minimum for small chunks
+        assert_eq!(embedding_config.min_chunk_tokens, 0); // Fixed minimum for small chunks
 
         let speed_config = HierarchicalChunkingConfig::for_speed();
         assert_eq!(speed_config.max_chunk_tokens, 512);
@@ -534,9 +532,8 @@ mod tests {
 
         let quality_config = HierarchicalChunkingConfig::for_quality();
         assert_eq!(quality_config.max_chunk_tokens, 1536);
-        assert_eq!(quality_config.min_chunk_tokens, 100);
+        assert_eq!(quality_config.min_chunk_tokens, 0);
     }
-
 
     #[test]
     fn test_mock_token_provider() {

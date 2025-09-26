@@ -55,7 +55,7 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
             })?;
 
         // Compile paragraph boundary detection regex
-        let paragraph_regex = Regex::new(r"\n\s*\n|\n\s*[　\t]")?;
+        let paragraph_regex = Regex::new(r"\n\s*\n")?;
 
         Ok(Self {
             config,
@@ -91,7 +91,7 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
                 ))
             })?;
 
-        let paragraph_regex = Regex::new(r"\n\s*\n|\n\s*[　\t]")?;
+        let paragraph_regex = Regex::new(r"\n\s*\n")?;
 
         Ok(Self {
             config,
@@ -201,7 +201,7 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
                     content.clone(),
                     tokens,
                     0,
-                    content.len(),
+                    content.chars().count(),
                     ChunkType::CompleteParagraph,
                     final_chunks.len(),
                 );
@@ -293,31 +293,39 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
         debug!("Detecting paragraph boundaries with regex");
 
         let mut paragraphs = Vec::new();
-        let mut last_end = 0;
+        let mut last_end_char = 0;
 
         for mat in self.paragraph_regex.find_iter(text) {
-            let start = mat.start();
-            if start > last_end {
-                let paragraph = &text[last_end..start];
+            let start_byte = mat.start();
+            let start_char = text[..start_byte].chars().count();
+
+            if start_char > last_end_char {
+                let paragraph: String = text.chars()
+                    .skip(last_end_char)
+                    .take(start_char - last_end_char)
+                    .collect();
+
                 if !paragraph.trim().is_empty() {
                     paragraphs.push(ParagraphInfo {
-                        content: paragraph.to_string(),
-                        char_start: last_end,
-                        char_end: start,
+                        content: paragraph,
+                        char_start: last_end_char,
+                        char_end: start_char,
                     });
                 }
             }
-            last_end = mat.end();
+            let end_byte = mat.end();
+            last_end_char = text[..end_byte].chars().count();
         }
 
         // Add the remaining text as the last paragraph
-        if last_end < text.len() {
-            let remaining = &text[last_end..];
+        let text_char_count = text.chars().count();
+        if last_end_char < text_char_count {
+            let remaining = text.chars().skip(last_end_char).collect::<String>();
             if !remaining.trim().is_empty() {
                 paragraphs.push(ParagraphInfo {
-                    content: remaining.to_string(),
-                    char_start: last_end,
-                    char_end: text.len(),
+                    content: remaining,
+                    char_start: last_end_char,
+                    char_end: text_char_count,
                 });
             }
         }
@@ -327,7 +335,7 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
             paragraphs.push(ParagraphInfo {
                 content: text.trim().to_string(),
                 char_start: 0,
-                char_end: text.len(),
+                char_end: text.chars().count(),
             });
         }
 
@@ -476,20 +484,20 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
 
         // Convert token positions to character positions and create chunks
         for (chunk_idx, (token_start, token_end)) in window_positions.iter().enumerate() {
-            // Simple approximation: map token positions to character positions
-            // This is not perfectly accurate but sufficient for forced splitting
-            let char_start = (token_start * text.len()) / total_token_count;
-            let char_end = std::cmp::min((token_end * text.len()) / total_token_count, text.len());
-
-            // Ensure we have valid character boundaries
-            let char_start = self.find_char_boundary(text, char_start);
-            let char_end = self.find_char_boundary(text, char_end);
+            // Map token positions to character positions based on character count
+            let text_char_count = text.chars().count();
+            let char_start = (token_start * text_char_count) / total_token_count;
+            let char_end = std::cmp::min((token_end * text_char_count) / total_token_count, text_char_count);
 
             if char_start >= char_end {
                 continue; // Skip invalid chunks
             }
 
-            let chunk_text = text[char_start..char_end].to_string();
+            // Safe character-based slicing to avoid Unicode boundary issues
+            let chunk_text = text.chars()
+                .skip(char_start)
+                .take(char_end.saturating_sub(char_start))
+                .collect::<String>();
             let chunk_tokens = self.tokenize_text(&chunk_text)?;
 
             let chunk = self.create_chunk(
@@ -509,28 +517,6 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
         Ok(chunks)
     }
 
-    /// Find the nearest valid character boundary for string slicing
-    fn find_char_boundary(&self, text: &str, approx_pos: usize) -> usize {
-        if approx_pos >= text.len() {
-            return text.len();
-        }
-
-        // Find the nearest valid UTF-8 boundary
-        let mut pos = approx_pos;
-        while pos < text.len() && !text.is_char_boundary(pos) {
-            pos += 1;
-        }
-
-        // If we went too far, try going backward
-        if pos >= text.len() {
-            pos = approx_pos;
-            while pos > 0 && !text.is_char_boundary(pos) {
-                pos -= 1;
-            }
-        }
-
-        pos
-    }
 
     /// Merge small paragraphs (Level 3 processing)
     fn merge_small_paragraphs_simple(
@@ -763,7 +749,6 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
         debug!("Starting tokenizer-based position adjustment");
         debug!("Token spans available: {}", token_spans.len());
 
-        let text_len = original_text.chars().count();
         let mut current_token_pos = 0;
 
         for (chunk_idx, chunk) in chunks.iter_mut().enumerate() {
@@ -788,19 +773,20 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
                 current_token_pos += chunk.tokens.len(); // Still need to advance position
 
                 // Apply safety check even for "correct" positions
-                if chunk.char_end > text_len {
+                let text_char_count = original_text.chars().count();
+                if chunk.char_end > text_char_count {
                     warn!(
-                        "Chunk {} end position {} exceeds text length {}, clamping",
-                        chunk_idx, chunk.char_end, text_len
+                        "Chunk {} char_end {} exceeds text character count {}, clamping",
+                        chunk_idx, chunk.char_end, text_char_count
                     );
-                    chunk.char_end = text_len;
+                    chunk.char_end = text_char_count;
                 }
-                if chunk.char_start > text_len {
+                if chunk.char_start > text_char_count {
                     warn!(
-                        "Chunk {} start position {} exceeds text length {}, clamping",
-                        chunk_idx, chunk.char_start, text_len
+                        "Chunk {} char_start {} exceeds text character count {}, clamping",
+                        chunk_idx, chunk.char_start, text_char_count
                     );
-                    chunk.char_start = text_len;
+                    chunk.char_start = text_char_count;
                 }
                 if chunk.char_start > chunk.char_end {
                     warn!(
@@ -818,13 +804,14 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
                 chunk.char_start = token_spans[current_token_pos].0;
                 chunk.char_end = token_spans[current_token_pos + chunk_token_count - 1].1;
 
-                // Safety check: ensure positions don't exceed text length
-                if chunk.char_end > text_len {
+                // Safety check: ensure positions don't exceed text character count
+                let text_char_count = original_text.chars().count();
+                if chunk.char_end > text_char_count {
                     warn!(
-                        "Chunk {} end position {} exceeds text length {}, clamping",
-                        chunk_idx, chunk.char_end, text_len
+                        "Chunk {} char_end {} exceeds text character count {}, clamping",
+                        chunk_idx, chunk.char_end, text_char_count
                     );
-                    chunk.char_end = text_len;
+                    chunk.char_end = text_char_count;
                 }
 
                 debug!(
@@ -843,10 +830,10 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
                 let estimated_start = if current_token_pos < token_spans.len() {
                     token_spans[current_token_pos].0
                 } else {
-                    text_len
+                    original_text.chars().count()
                 };
                 chunk.char_start = estimated_start;
-                chunk.char_end = (estimated_start + chunk.content.chars().count()).min(text_len);
+                chunk.char_end = (estimated_start + chunk.content.chars().count()).min(original_text.chars().count());
             }
         }
 
@@ -875,34 +862,40 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
             // Always recalculate positions to ensure accuracy
 
             // Try to find the chunk content in the original text
-            if let Some(pos) = original_text[current_search_pos..].find(&chunk.content) {
-                let actual_start = current_search_pos + pos;
+            // Convert char position to string slice using chars().skip()
+            let search_slice: String = original_text.chars().skip(current_search_pos).collect();
+            if let Some(byte_pos) = search_slice.find(&chunk.content) {
+                // Convert byte position to character position within search_slice
+                let char_pos = search_slice[..byte_pos].chars().count();
+                let actual_start = current_search_pos + char_pos;
                 chunk.char_start = actual_start;
-                chunk.char_end = actual_start + chunk.content.len();
+                chunk.char_end = actual_start + chunk.content.chars().count();
                 current_search_pos = chunk.char_end;
             } else {
                 // Fallback: try without the leading search position constraint
-                if let Some(pos) = original_text.find(&chunk.content) {
-                    chunk.char_start = pos;
-                    chunk.char_end = pos + chunk.content.len();
+                if let Some(byte_pos) = original_text.find(&chunk.content) {
+                    // Convert byte position to character position
+                    let char_pos = original_text[..byte_pos].chars().count();
+                    chunk.char_start = char_pos;
+                    chunk.char_end = char_pos + chunk.content.chars().count();
                 } else {
                     warn!(
                         "Could not find chunk content in original text: {}",
-                        &chunk.content[..50.min(chunk.content.len())]
+                        chunk.content.chars().take(50).collect::<String>()
                     );
                     // Fallback to sequential positioning
                     chunk.char_start = current_search_pos;
-                    chunk.char_end = current_search_pos + chunk.content.len();
+                    chunk.char_end = current_search_pos + chunk.content.chars().count();
                     current_search_pos = chunk.char_end;
                 }
             }
 
             // Safety check
-            let text_len = original_text.len();
-            if chunk.char_end > text_len {
-                chunk.char_end = text_len;
-                if chunk.char_start > text_len {
-                    chunk.char_start = text_len;
+            let text_char_count = original_text.chars().count();
+            if chunk.char_end > text_char_count {
+                chunk.char_end = text_char_count;
+                if chunk.char_start > text_char_count {
+                    chunk.char_start = text_char_count;
                 }
             }
         }
@@ -1163,8 +1156,8 @@ mod tests {
         // Verify exact content matches - should be the main part of each sentence
         for (i, chunk) in chunks.iter().enumerate() {
             assert_eq!(
-                chunk.content, "これは非常に長いテキストで",
-                "Chunk {} content should be the main part without 'す。'",
+                chunk.content, "これは非常に長いテキスト",
+                "Chunk {} content should be the main part without ending",
                 i
             );
         }
