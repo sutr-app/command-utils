@@ -300,7 +300,8 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
             let start_char = text[..start_byte].chars().count();
 
             if start_char > last_end_char {
-                let paragraph: String = text.chars()
+                let paragraph: String = text
+                    .chars()
                     .skip(last_end_char)
                     .take(start_char - last_end_char)
                     .collect();
@@ -474,10 +475,10 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
         // Calculate sliding window positions with no overlap (stride = max_chunk_tokens)
         let window_positions = SlidingWindowCalculator::calculate_sliding_windows(
             total_token_count,
-            0,                               // No instruction length for forced splitting
-            self.config.max_chunk_tokens,    // Maximum tokens per chunk
-            self.config.max_chunk_tokens,    // Stride = max_chunk_tokens (no overlap)
-            self.config.min_chunk_tokens,    // Minimum chunk size
+            0,                            // No instruction length for forced splitting
+            self.config.max_chunk_tokens, // Maximum tokens per chunk
+            self.config.max_chunk_tokens, // Stride = max_chunk_tokens (no overlap)
+            self.config.min_chunk_tokens, // Minimum chunk size
         )?;
 
         let mut chunks = Vec::new();
@@ -487,14 +488,18 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
             // Map token positions to character positions based on character count
             let text_char_count = text.chars().count();
             let char_start = (token_start * text_char_count) / total_token_count;
-            let char_end = std::cmp::min((token_end * text_char_count) / total_token_count, text_char_count);
+            let char_end = std::cmp::min(
+                (token_end * text_char_count) / total_token_count,
+                text_char_count,
+            );
 
             if char_start >= char_end {
                 continue; // Skip invalid chunks
             }
 
             // Safe character-based slicing to avoid Unicode boundary issues
-            let chunk_text = text.chars()
+            let chunk_text = text
+                .chars()
                 .skip(char_start)
                 .take(char_end.saturating_sub(char_start))
                 .collect::<String>();
@@ -513,10 +518,12 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
 
         self.statistics
             .record_forced_splitting_time(forced_start.elapsed());
-        debug!("Created {} forced split chunks using sliding window", chunks.len());
+        debug!(
+            "Created {} forced split chunks using sliding window",
+            chunks.len()
+        );
         Ok(chunks)
     }
-
 
     /// Merge small paragraphs (Level 3 processing)
     fn merge_small_paragraphs_simple(
@@ -833,7 +840,8 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
                     original_text.chars().count()
                 };
                 chunk.char_start = estimated_start;
-                chunk.char_end = (estimated_start + chunk.content.chars().count()).min(original_text.chars().count());
+                chunk.char_end = (estimated_start + chunk.content.chars().count())
+                    .min(original_text.chars().count());
             }
         }
 
@@ -1307,7 +1315,6 @@ mod tests {
             enable_paragraph_merging: false,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            ..Default::default()
         };
         let token_provider = MockTokenProvider;
         let mut chunker = HierarchicalChunker::new(config, token_provider, None).unwrap();
@@ -1344,7 +1351,6 @@ mod tests {
             enable_paragraph_merging: false,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            ..Default::default()
         };
         let token_provider = MockTokenProvider;
         let mut chunker = HierarchicalChunker::new(config, token_provider, None).unwrap();
@@ -1396,7 +1402,6 @@ mod tests {
             enable_paragraph_merging: false,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            ..Default::default()
         };
         let token_provider = MockTokenProvider;
         let mut chunker = HierarchicalChunker::new(config, token_provider, None).unwrap();
@@ -1436,7 +1441,6 @@ mod tests {
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            ..Default::default()
         };
         let token_provider = MockTokenProvider;
         let mut chunker = HierarchicalChunker::new(config, token_provider, None).unwrap();
@@ -1514,7 +1518,6 @@ mod tests {
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            ..Default::default()
         };
         let token_provider = MockTokenProvider;
         let mut chunker = HierarchicalChunker::new(config, token_provider, None).unwrap();
@@ -1555,7 +1558,6 @@ mod tests {
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
-            ..Default::default()
         };
         let token_provider = MockTokenProvider;
         let mut chunker = HierarchicalChunker::new(config.clone(), token_provider, None).unwrap();

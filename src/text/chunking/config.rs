@@ -65,7 +65,7 @@ impl HierarchicalChunkingConfig {
     pub fn for_embedding(max_tokens: usize) -> Self {
         Self {
             max_chunk_tokens: max_tokens,
-            min_chunk_tokens: 0 as usize, // very small minimum to allow small chunks
+            min_chunk_tokens: 0_usize, // very small minimum to allow small chunks
             enable_paragraph_merging: true,
             enable_sentence_splitting: true,
             enable_forced_splitting: true,
