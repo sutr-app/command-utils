@@ -358,6 +358,7 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
             return self.apply_forced_splitting(paragraph);
         }
 
+        #[allow(clippy::unnecessary_to_owned)]
         let sentences = self.sentence_splitter.split(paragraph.to_string());
         let mut chunks = Vec::new();
         let mut current_sentences = Vec::new();
@@ -1645,9 +1646,8 @@ mod tests {
         // 5. Verify no gaps or significant overlaps in coverage
         let mut covered_chars = vec![false; text_len];
         for chunk in &chunks {
-            for pos in chunk.char_start..chunk.char_end.min(text_len) {
-                covered_chars[pos] = true;
-            }
+            let end = chunk.char_end.min(text_len);
+            covered_chars[chunk.char_start..end].fill(true);
         }
 
         // Count uncovered positions (excluding whitespace-only areas)
