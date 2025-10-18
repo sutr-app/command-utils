@@ -80,7 +80,7 @@ pub trait Tracing {
             "app.name" = app_name,
             "span.name" = span_name
         );
-        child_tracing_span.set_parent(parent_cx.clone());
+        let _ = child_tracing_span.set_parent(parent_cx.clone());
         child_tracing_span
     }
     // XXX not working...
@@ -90,7 +90,7 @@ pub trait Tracing {
         span_name: String,
     ) -> tracing::Span {
         let span = tracing::info_span!("_", "app.name" = app_name, "span.name" = span_name);
-        span.set_parent(parent_cx.clone());
+        let _ = span.set_parent(parent_cx.clone());
         span
     }
     fn start_child_otel_span(
