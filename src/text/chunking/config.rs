@@ -113,20 +113,15 @@ impl HierarchicalChunkingConfig {
 }
 
 /// Strategy for chunking when no token provider is available
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FallbackStrategy {
     /// Use character count estimation (rough 4 chars per token)
+    #[default]
     CharacterEstimation,
     /// Split by character limit only
     CharacterLimit,
     /// Error if no token provider available
     RequireTokenProvider,
-}
-
-impl Default for FallbackStrategy {
-    fn default() -> Self {
-        Self::CharacterEstimation
-    }
 }
 
 /// Performance and statistical information for chunking operations

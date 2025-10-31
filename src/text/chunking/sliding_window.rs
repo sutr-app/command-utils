@@ -91,22 +91,17 @@ impl SlidingWindowCalculator {
 }
 
 /// Merge strategies for combining results from multiple windows
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MergeStrategy {
     /// Simple average of all windows
     Average,
     /// Weighted average (more weight to middle windows)
+    #[default]
     WeightedAverage,
     /// Use only the first window
     FirstWindow,
     /// Use only the last window
     LastWindow,
-}
-
-impl Default for MergeStrategy {
-    fn default() -> Self {
-        Self::WeightedAverage
-    }
 }
 
 /// Generic embedding merger for sliding window results
