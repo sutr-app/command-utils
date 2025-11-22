@@ -223,6 +223,17 @@ impl TextUtil {
             format!("{:x}", hasher.finish())
         }
     }
+    pub fn to_pascal_case(s: &str) -> String {
+        s.split('_')
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().chain(chars).collect(),
+                    None => String::new(),
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -420,6 +431,14 @@ mod tests {
         let text = "<|00.80|>";
         let expected = vec!["<|00.80|>"];
         assert_eq!(SentenceSplitter::split_with_div_regex(&r, text), expected);
+    }
+    #[test]
+    fn test_to_pascal_case() {
+        assert_eq!(TextUtil::to_pascal_case("hello_world"), "HelloWorld");
+        assert_eq!(TextUtil::to_pascal_case("hello__world"), "HelloWorld"); // empty segments are skipped
+        assert_eq!(TextUtil::to_pascal_case("_hello_world_"), "HelloWorld");
+        assert_eq!(TextUtil::to_pascal_case("hello"), "Hello");
+        assert_eq!(TextUtil::to_pascal_case(""), "");
     }
     #[test]
     fn test_snake_to_camel() {
