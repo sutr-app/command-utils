@@ -912,4 +912,49 @@ message TestArg {
         );
         Ok(())
     }
+
+    #[test]
+    fn test_message_descriptor_to_json_schema_with_oneof() -> Result<()> {
+        // Test case for oneof fields (similar to PythonCommandArgs)
+        let proto_string = r#"
+        syntax = "proto3";
+
+        message PythonCommandArgs {
+            map<string, string> env_vars = 1;
+
+            oneof script {
+                string script_content = 2;
+                string script_url = 3;
+            }
+
+            oneof input_data {
+                string data_body = 4;
+                string data_url = 5;
+            }
+
+            bool with_stderr = 6;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_descriptor = descriptor.get_message_by_name("PythonCommandArgs").unwrap();
+
+        let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+
+        println!(
+            "Oneof JSON Schema: {}",
+            serde_json::to_string_pretty(&json_schema)?
+        );
+
+        let props = json_schema["properties"].as_object().unwrap();
+
+        // Regular fields should exist
+        assert!(props.contains_key("envVars"));
+        assert!(props.contains_key("withStderr"));
+
+        // Oneof fields should be flattened into properties
+        assert!(props.contains_key("scriptContent") || props.contains_key("scriptUrl"));
+        assert!(props.contains_key("dataBody") || props.contains_key("dataUrl"));
+
+        Ok(())
+    }
 }
