@@ -230,6 +230,139 @@ impl ProtobufDescriptor {
         deserializer.end()?;
         Ok(dynamic_message.encode_to_vec())
     }
+
+    /// Convert Protobuf MessageDescriptor to JSON Schema
+    ///
+    /// This utility enables automatic JSON Schema generation from Protobuf definitions.
+    /// Plugin developers only need to implement method_proto_map(), and JSON Schema
+    /// will be generated automatically via the default implementation of method_json_schema_map().
+    ///
+    /// # Arguments
+    /// * `descriptor` - Protobuf MessageDescriptor to convert
+    ///
+    /// # Returns
+    /// JSON Schema as serde_json::Value
+    ///
+    /// # Example
+    /// ```ignore
+    /// let proto_string = r#"
+    ///     message CommandArgs {
+    ///         string command = 1;
+    ///         repeated string args = 2;
+    ///         optional int32 timeout_ms = 3;
+    ///     }
+    /// "#;
+    /// let descriptor = ProtobufDescriptor::new(&proto_string)?;
+    /// let msg_descriptor = descriptor.get_message_by_name("CommandArgs")?;
+    /// let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+    /// ```
+    pub fn message_descriptor_to_json_schema(descriptor: &MessageDescriptor) -> serde_json::Value {
+        let mut properties = serde_json::Map::new();
+        let mut required_fields = Vec::new();
+
+        for field in descriptor.fields() {
+            let field_schema = Self::field_to_json_schema(&field);
+            properties.insert(field.json_name().to_string(), field_schema);
+
+            // Proto3: all fields are optional by default, except for explicitly required
+            // For JSON Schema, we treat non-optional, non-repeated, non-map fields as required
+            if !field.is_list()
+                && !field.is_map()
+                && field.cardinality() == prost_reflect::Cardinality::Required
+            {
+                required_fields.push(field.json_name().to_string());
+            }
+        }
+
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": properties,
+        });
+
+        if !required_fields.is_empty() {
+            schema["required"] = serde_json::Value::Array(
+                required_fields
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            );
+        }
+
+        schema
+    }
+
+    /// Convert Protobuf FieldDescriptor to JSON Schema
+    fn field_to_json_schema(field: &prost_reflect::FieldDescriptor) -> serde_json::Value {
+        if field.is_list() {
+            // Repeated field -> array
+            return serde_json::json!({
+                "type": "array",
+                "items": Self::kind_to_json_schema(&field.kind())
+            });
+        }
+
+        if field.is_map() {
+            // Map field -> object with additionalProperties
+            // For map<K, V>, we need to get the value type from the map entry message
+            if let prost_reflect::Kind::Message(map_entry) = field.kind() {
+                // Map entry has two fields: key (field 1) and value (field 2)
+                if let Some(value_field) = map_entry.fields().find(|f| f.number() == 2) {
+                    return serde_json::json!({
+                        "type": "object",
+                        "additionalProperties": Self::kind_to_json_schema(&value_field.kind())
+                    });
+                }
+            }
+            // Fallback for malformed map
+            return serde_json::json!({
+                "type": "object",
+                "additionalProperties": true
+            });
+        }
+
+        Self::kind_to_json_schema(&field.kind())
+    }
+
+    /// Convert Protobuf Kind to JSON Schema type
+    fn kind_to_json_schema(kind: &prost_reflect::Kind) -> serde_json::Value {
+        match kind {
+            prost_reflect::Kind::Double | prost_reflect::Kind::Float => {
+                serde_json::json!({"type": "number"})
+            }
+            prost_reflect::Kind::Int32
+            | prost_reflect::Kind::Sint32
+            | prost_reflect::Kind::Sfixed32
+            | prost_reflect::Kind::Int64
+            | prost_reflect::Kind::Sint64
+            | prost_reflect::Kind::Sfixed64
+            | prost_reflect::Kind::Uint32
+            | prost_reflect::Kind::Fixed32
+            | prost_reflect::Kind::Uint64
+            | prost_reflect::Kind::Fixed64 => {
+                serde_json::json!({"type": "integer"})
+            }
+            prost_reflect::Kind::Bool => serde_json::json!({"type": "boolean"}),
+            prost_reflect::Kind::String => serde_json::json!({"type": "string"}),
+            prost_reflect::Kind::Bytes => {
+                serde_json::json!({"type": "string", "format": "byte"})
+            }
+            prost_reflect::Kind::Message(msg_desc) => {
+                // Nested message -> recursively convert
+                Self::message_descriptor_to_json_schema(msg_desc)
+            }
+            prost_reflect::Kind::Enum(enum_desc) => {
+                // Enum -> string with enum values
+                let enum_values: Vec<_> = enum_desc
+                    .values()
+                    .map(|v| serde_json::Value::String(v.name().to_string()))
+                    .collect();
+                serde_json::json!({
+                    "type": "string",
+                    "enum": enum_values
+                })
+            }
+        }
+    }
 }
 
 // create test
@@ -398,6 +531,384 @@ message TestArg {
                 "description": "test desc:\n あいうえお",
                 "tags": ["tag1", "tag2"]
             })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_message_descriptor_to_json_schema_basic_types() -> Result<()> {
+        let proto_string = r#"
+        syntax = "proto3";
+
+        message CommandArgs {
+            string command = 1;
+            repeated string args = 2;
+            int32 timeout_ms = 3;
+            bool verbose = 4;
+            double priority = 5;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_descriptor = descriptor.get_message_by_name("CommandArgs").unwrap();
+
+        let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+
+        // Verify structure
+        assert_eq!(json_schema["type"], "object");
+        assert!(json_schema["properties"].is_object());
+
+        // Verify field types
+        let props = json_schema["properties"].as_object().unwrap();
+        assert_eq!(props["command"]["type"], "string");
+        assert_eq!(props["args"]["type"], "array");
+        assert_eq!(props["args"]["items"]["type"], "string");
+        assert_eq!(props["timeoutMs"]["type"], "integer");
+        assert_eq!(props["verbose"]["type"], "boolean");
+        assert_eq!(props["priority"]["type"], "number");
+
+        println!(
+            "JSON Schema: {}",
+            serde_json::to_string_pretty(&json_schema)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_message_descriptor_to_json_schema_nested_message() -> Result<()> {
+        let proto_string = r#"
+        syntax = "proto3";
+
+        message Address {
+            string street = 1;
+            string city = 2;
+        }
+
+        message Person {
+            string name = 1;
+            int32 age = 2;
+            Address address = 3;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_descriptor = descriptor.get_message_by_name("Person").unwrap();
+
+        let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+
+        let props = json_schema["properties"].as_object().unwrap();
+        assert_eq!(props["name"]["type"], "string");
+        assert_eq!(props["age"]["type"], "integer");
+
+        // Verify nested message
+        let address_schema = &props["address"];
+        assert_eq!(address_schema["type"], "object");
+        let address_props = address_schema["properties"].as_object().unwrap();
+        assert_eq!(address_props["street"]["type"], "string");
+        assert_eq!(address_props["city"]["type"], "string");
+
+        println!(
+            "JSON Schema: {}",
+            serde_json::to_string_pretty(&json_schema)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_message_descriptor_to_json_schema_enum() -> Result<()> {
+        let proto_string = r#"
+        syntax = "proto3";
+
+        enum Status {
+            UNKNOWN = 0;
+            PENDING = 1;
+            RUNNING = 2;
+            COMPLETED = 3;
+        }
+
+        message Task {
+            string name = 1;
+            Status status = 2;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_descriptor = descriptor.get_message_by_name("Task").unwrap();
+
+        let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+
+        let props = json_schema["properties"].as_object().unwrap();
+        assert_eq!(props["name"]["type"], "string");
+
+        // Verify enum field
+        let status_schema = &props["status"];
+        assert_eq!(status_schema["type"], "string");
+        let enum_values = status_schema["enum"].as_array().unwrap();
+        assert_eq!(enum_values.len(), 4);
+        assert!(enum_values.contains(&serde_json::Value::String("UNKNOWN".to_string())));
+        assert!(enum_values.contains(&serde_json::Value::String("PENDING".to_string())));
+        assert!(enum_values.contains(&serde_json::Value::String("RUNNING".to_string())));
+        assert!(enum_values.contains(&serde_json::Value::String("COMPLETED".to_string())));
+
+        println!(
+            "JSON Schema: {}",
+            serde_json::to_string_pretty(&json_schema)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_message_descriptor_to_json_schema_map() -> Result<()> {
+        let proto_string = r#"
+        syntax = "proto3";
+
+        message Config {
+            string name = 1;
+            map<string, string> labels = 2;
+            map<string, int32> counters = 3;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_descriptor = descriptor.get_message_by_name("Config").unwrap();
+
+        let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+
+        let props = json_schema["properties"].as_object().unwrap();
+        assert_eq!(props["name"]["type"], "string");
+
+        // Verify map<string, string>
+        let labels_schema = &props["labels"];
+        assert_eq!(labels_schema["type"], "object");
+        assert_eq!(labels_schema["additionalProperties"]["type"], "string");
+
+        // Verify map<string, int32>
+        let counters_schema = &props["counters"];
+        assert_eq!(counters_schema["type"], "object");
+        assert_eq!(counters_schema["additionalProperties"]["type"], "integer");
+
+        println!(
+            "JSON Schema: {}",
+            serde_json::to_string_pretty(&json_schema)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_message_descriptor_to_json_schema_deeply_nested_message() -> Result<()> {
+        // Test case for 3+ levels of nested messages
+        let proto_string = r#"
+        syntax = "proto3";
+
+        message GeoCoordinates {
+            double latitude = 1;
+            double longitude = 2;
+        }
+
+        message Location {
+            string name = 1;
+            GeoCoordinates coordinates = 2;
+        }
+
+        message Address {
+            string street = 1;
+            string city = 2;
+            Location location = 3;
+        }
+
+        message Company {
+            string name = 1;
+            Address headquarters = 2;
+        }
+
+        message Person {
+            string name = 1;
+            int32 age = 2;
+            Company employer = 3;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_descriptor = descriptor.get_message_by_name("Person").unwrap();
+
+        let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+
+        // Level 1: Person
+        let props = json_schema["properties"].as_object().unwrap();
+        assert_eq!(props["name"]["type"], "string");
+        assert_eq!(props["age"]["type"], "integer");
+
+        // Level 2: Company (nested in Person)
+        let company_schema = &props["employer"];
+        assert_eq!(company_schema["type"], "object");
+        let company_props = company_schema["properties"].as_object().unwrap();
+        assert_eq!(company_props["name"]["type"], "string");
+
+        // Level 3: Address (nested in Company)
+        let address_schema = &company_props["headquarters"];
+        assert_eq!(address_schema["type"], "object");
+        let address_props = address_schema["properties"].as_object().unwrap();
+        assert_eq!(address_props["street"]["type"], "string");
+        assert_eq!(address_props["city"]["type"], "string");
+
+        // Level 4: Location (nested in Address)
+        let location_schema = &address_props["location"];
+        assert_eq!(location_schema["type"], "object");
+        let location_props = location_schema["properties"].as_object().unwrap();
+        assert_eq!(location_props["name"]["type"], "string");
+
+        // Level 5: GeoCoordinates (nested in Location)
+        let coords_schema = &location_props["coordinates"];
+        assert_eq!(coords_schema["type"], "object");
+        let coords_props = coords_schema["properties"].as_object().unwrap();
+        assert_eq!(coords_props["latitude"]["type"], "number");
+        assert_eq!(coords_props["longitude"]["type"], "number");
+
+        println!(
+            "Deeply nested JSON Schema: {}",
+            serde_json::to_string_pretty(&json_schema)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_message_descriptor_to_json_schema_nested_with_arrays() -> Result<()> {
+        // Test case for nested messages with repeated fields (arrays)
+        let proto_string = r#"
+        syntax = "proto3";
+
+        message Tag {
+            string key = 1;
+            string value = 2;
+        }
+
+        message Metadata {
+            string description = 1;
+            repeated Tag tags = 2;
+        }
+
+        message Item {
+            string name = 1;
+            Metadata metadata = 2;
+        }
+
+        message Category {
+            string name = 1;
+            repeated Item items = 2;
+        }
+
+        message Catalog {
+            string title = 1;
+            repeated Category categories = 2;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_descriptor = descriptor.get_message_by_name("Catalog").unwrap();
+
+        let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+
+        // Level 1: Catalog
+        let props = json_schema["properties"].as_object().unwrap();
+        assert_eq!(props["title"]["type"], "string");
+
+        // Level 2: Category array
+        let categories_schema = &props["categories"];
+        assert_eq!(categories_schema["type"], "array");
+        let category_item = &categories_schema["items"];
+        assert_eq!(category_item["type"], "object");
+        let category_props = category_item["properties"].as_object().unwrap();
+        assert_eq!(category_props["name"]["type"], "string");
+
+        // Level 3: Item array (nested in Category)
+        let items_schema = &category_props["items"];
+        assert_eq!(items_schema["type"], "array");
+        let item_schema = &items_schema["items"];
+        assert_eq!(item_schema["type"], "object");
+        let item_props = item_schema["properties"].as_object().unwrap();
+        assert_eq!(item_props["name"]["type"], "string");
+
+        // Level 4: Metadata (nested in Item)
+        let metadata_schema = &item_props["metadata"];
+        assert_eq!(metadata_schema["type"], "object");
+        let metadata_props = metadata_schema["properties"].as_object().unwrap();
+        assert_eq!(metadata_props["description"]["type"], "string");
+
+        // Level 5: Tag array (nested in Metadata)
+        let tags_schema = &metadata_props["tags"];
+        assert_eq!(tags_schema["type"], "array");
+        let tag_schema = &tags_schema["items"];
+        assert_eq!(tag_schema["type"], "object");
+        let tag_props = tag_schema["properties"].as_object().unwrap();
+        assert_eq!(tag_props["key"]["type"], "string");
+        assert_eq!(tag_props["value"]["type"], "string");
+
+        println!(
+            "Nested arrays JSON Schema: {}",
+            serde_json::to_string_pretty(&json_schema)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_message_descriptor_to_json_schema_nested_with_maps() -> Result<()> {
+        // Test case for nested messages with map fields
+        let proto_string = r#"
+        syntax = "proto3";
+
+        message Attribute {
+            string type = 1;
+            string value = 2;
+        }
+
+        message Properties {
+            map<string, string> labels = 1;
+            map<string, Attribute> attributes = 2;
+        }
+
+        message Resource {
+            string name = 1;
+            Properties properties = 2;
+        }
+
+        message Namespace {
+            string name = 1;
+            map<string, Resource> resources = 2;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_descriptor = descriptor.get_message_by_name("Namespace").unwrap();
+
+        let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
+
+        // Level 1: Namespace
+        let props = json_schema["properties"].as_object().unwrap();
+        assert_eq!(props["name"]["type"], "string");
+
+        // Level 2: Resource map
+        let resources_schema = &props["resources"];
+        assert_eq!(resources_schema["type"], "object");
+        let resource_schema = &resources_schema["additionalProperties"];
+        assert_eq!(resource_schema["type"], "object");
+        let resource_props = resource_schema["properties"].as_object().unwrap();
+        assert_eq!(resource_props["name"]["type"], "string");
+
+        // Level 3: Properties (nested in Resource)
+        let properties_schema = &resource_props["properties"];
+        assert_eq!(properties_schema["type"], "object");
+        let properties_props = properties_schema["properties"].as_object().unwrap();
+
+        // Level 4: labels map (map<string, string>)
+        let labels_schema = &properties_props["labels"];
+        assert_eq!(labels_schema["type"], "object");
+        assert_eq!(labels_schema["additionalProperties"]["type"], "string");
+
+        // Level 4: attributes map (map<string, Attribute>)
+        let attributes_schema = &properties_props["attributes"];
+        assert_eq!(attributes_schema["type"], "object");
+        let attribute_schema = &attributes_schema["additionalProperties"];
+        assert_eq!(attribute_schema["type"], "object");
+        let attribute_props = attribute_schema["properties"].as_object().unwrap();
+        assert_eq!(attribute_props["type"]["type"], "string");
+        assert_eq!(attribute_props["value"]["type"], "string");
+
+        println!(
+            "Nested maps JSON Schema: {}",
+            serde_json::to_string_pretty(&json_schema)?
         );
         Ok(())
     }
