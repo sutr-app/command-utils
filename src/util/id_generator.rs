@@ -110,6 +110,7 @@ pub mod iputil {
     use std::cmp;
 
     pub static IP_LOCAL: Lazy<Ipv4Network> = Lazy::new(|| "127.0.0.0/8".parse().unwrap());
+    static IP_LINK_LOCAL: Lazy<Ipv4Network> = Lazy::new(|| "169.254.0.0/16".parse().unwrap());
     static IP_CLASS_A: Lazy<Ipv4Network> = Lazy::new(|| "10.0.0.0/8".parse().unwrap());
     static IP_CLASS_B: Lazy<Ipv4Network> = Lazy::new(|| "172.16.0.0/12".parse().unwrap());
     static IP_CLASS_C: Lazy<Ipv4Network> = Lazy::new(|| "192.168.0.0/16".parse().unwrap());
@@ -127,12 +128,21 @@ pub mod iputil {
         for iface in datalink::interfaces() {
             for ip in iface.ips {
                 match ip {
-                    IpNetwork::V4(v4) => {
-                        if p < priority(v4) {
+                    IpNetwork::V4(v4) => match priority(v4) {
+                        Some(prio) if p < prio => {
                             address = Some(v4);
-                            p = priority(v4);
+                            p = prio;
                         }
-                    }
+                        Some(p) => {
+                            tracing::warn!("ipv4 address {:?} skipped (priority {})", v4, p);
+                        }
+                        None => {
+                            tracing::debug!(
+                                "ipv4 address {:?} skipped (loopback or link-local)",
+                                v4
+                            );
+                        }
+                    },
                     IpNetwork::V6(v6) => {
                         tracing::debug!(
                             "ipv6 address {:?} not supported for snowflake node num (use random)",
@@ -154,17 +164,21 @@ pub mod iputil {
         );
         u32::from(ip.ip()) & host_mask
     }
-    fn priority(ip: Ipv4Network) -> usize {
-        for (i, net) in [*IP_LOCAL, *IP_CLASS_A, *IP_CLASS_B, *IP_CLASS_C]
-            .iter()
-            .enumerate()
-        {
+    /// Returns priority for the IP address. Higher value means more preferred.
+    /// Returns None for addresses that should be skipped (loopback, link-local).
+    fn priority(ip: Ipv4Network) -> Option<usize> {
+        // Skip loopback and link-local addresses
+        if IP_LOCAL.contains(ip.ip()) || IP_LINK_LOCAL.contains(ip.ip()) {
+            return None;
+        }
+        // Private networks with increasing priority
+        for (i, net) in [*IP_CLASS_A, *IP_CLASS_B, *IP_CLASS_C].iter().enumerate() {
             if net.contains(ip.ip()) {
-                return i;
+                return Some(i + 1);
             }
         }
-        // global?
-        4
+        // Global IP has highest priority
+        Some(4)
     }
     #[test]
     fn host_num_test() {
@@ -176,10 +190,14 @@ pub mod iputil {
     }
     #[test]
     fn priority_test() {
-        assert_eq!(priority("127.168.254.254/8".parse().unwrap()), 0);
-        assert_eq!(priority("10.168.254.254/14".parse().unwrap()), 1);
-        assert_eq!(priority("172.16.254.254/12".parse().unwrap()), 2);
-        assert_eq!(priority("192.168.254.254/24".parse().unwrap()), 3);
-        assert_eq!(priority("12.168.254.254/24".parse().unwrap()), 4);
+        // Loopback and link-local should return None (skipped)
+        assert_eq!(priority("127.168.254.254/8".parse().unwrap()), None);
+        assert_eq!(priority("169.254.20.10/32".parse().unwrap()), None);
+        // Private networks
+        assert_eq!(priority("10.168.254.254/14".parse().unwrap()), Some(1));
+        assert_eq!(priority("172.16.254.254/12".parse().unwrap()), Some(2));
+        assert_eq!(priority("192.168.254.254/24".parse().unwrap()), Some(3));
+        // Global IP
+        assert_eq!(priority("12.168.254.254/24".parse().unwrap()), Some(4));
     }
 }
