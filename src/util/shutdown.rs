@@ -44,3 +44,45 @@ pub fn create_lock_and_wait() -> (ShutdownLock, ShutdownWait) {
     let (send, recv) = mpsc::unbounded_channel();
     (ShutdownLock::new(send), ShutdownWait::new(recv))
 }
+
+/// Wait for shutdown signal (SIGINT or SIGTERM)
+///
+/// On Unix: waits for SIGINT or SIGTERM
+/// On Windows: waits for Ctrl+C only
+pub async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to create SIGINT handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to create SIGTERM handler");
+
+        tokio::select! {
+            _ = sigint.recv() => {
+                tracing::info!("received SIGINT, initiating shutdown");
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM, initiating shutdown");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for ctrl_c");
+        tracing::info!("received ctrl_c, initiating shutdown");
+    }
+}
+
+/// Spawn a shutdown signal handler that broadcasts to a watch channel
+pub fn spawn_shutdown_handler(
+    shutdown_send: tokio::sync::watch::Sender<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_send.send(true);
+    })
+}
