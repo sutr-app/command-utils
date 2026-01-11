@@ -64,7 +64,15 @@ pub fn execute_jq(
         // This is *NOT* a simple identity function, but a lifetime inference workaround.
         .with_funs(funs.map(|x| x))
         .compile(modules)
-        .map_err(compile_errors)
+        .map_err(|errs| {
+            let available_vars: Vec<&str> = params.keys().map(|s| s.as_str()).collect();
+            tracing::debug!(
+                "jq compile error for '{}'. Available variables: {:?}",
+                filter_expr,
+                available_vars
+            );
+            compile_errors(errs)
+        })
         .map_err(|e| anyhow!(e))?;
     let inputs = RcIter::new(core::iter::empty());
     let ctx = Ctx::new(values, &inputs);
@@ -89,9 +97,9 @@ pub fn execute_jq(
 
 // JAQ errors must be parsed and synthesized.  All of this code is adapted from `jaq/src/main.rs`.
 
-/// Converts all errors from jaq into a single string.
+/// Converts all errors from jaq into a single string with comma separator.
 fn errors_to_string<Reports: Iterator<Item = String>>(reports: Reports) -> String {
-    reports.into_iter().collect()
+    reports.into_iter().collect::<Vec<_>>().join(", ")
 }
 
 /// Turns loading errors from jaq into raw strings.
@@ -223,6 +231,39 @@ mod tests {
         assert!(
             msg.contains("undefined filter"),
             "Expected compile error {msg}"
+        );
+    }
+
+    #[test]
+    fn test_multiple_compile_errors_separated() {
+        let input = json!({});
+        let values = BTreeMap::new();
+        // Reference two undefined filters to trigger multiple compile errors
+        let error =
+            execute_jq(input, ".x | undefined1 | undefined2", &values).expect_err("Should fail");
+        let msg = format!("{error}");
+        // Multiple errors should be separated by ", "
+        assert!(
+            msg.contains(", "),
+            "Multiple errors should be comma-separated: {msg}"
+        );
+        assert!(
+            msg.matches("undefined").count() >= 2,
+            "Should have at least 2 undefined errors: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_undefined_variable_error() {
+        let input = json!({"key": "value"});
+        let mut values = BTreeMap::new();
+        values.insert("defined_var".to_owned(), Arc::new(json!(123)));
+        // Reference an undefined variable
+        let error = execute_jq(input, "$undefined_var", &values).expect_err("Should fail");
+        let msg = format!("{error}");
+        assert!(
+            msg.contains("undefined"),
+            "Error should mention undefined: {msg}"
         );
     }
 }
