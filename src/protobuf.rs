@@ -3,6 +3,7 @@ use itertools::Itertools;
 use prost::Message;
 use prost_reflect::{
     DescriptorPool, DeserializeOptions, DynamicMessage, MessageDescriptor, ReflectMessage,
+    SerializeOptions,
 };
 use serde_json::de::Deserializer;
 use std::io::Cursor;
@@ -142,6 +143,18 @@ impl ProtobufDescriptor {
     }
     pub fn message_to_json_value(message: &DynamicMessage) -> Result<serde_json::Value> {
         let json = serde_json::to_value(message)?;
+        Ok(json)
+    }
+
+    /// Convert DynamicMessage to JSON Value using original proto field names (snake_case)
+    ///
+    /// This is useful when the JSON needs to preserve the original field names
+    /// instead of converting to lowerCamelCase (which is the default protobuf JSON mapping).
+    pub fn message_to_json_value_with_proto_names(
+        message: &DynamicMessage,
+    ) -> Result<serde_json::Value> {
+        let options = SerializeOptions::new().use_proto_field_name(true);
+        let json = message.serialize_with_options(serde_json::value::Serializer, &options)?;
         Ok(json)
     }
     pub fn print_dynamic_message(message: &DynamicMessage, byte_to_string: bool) {
