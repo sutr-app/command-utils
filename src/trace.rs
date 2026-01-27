@@ -1,11 +1,11 @@
 use anyhow::Result;
 use opentelemetry::propagation::Injector;
 use opentelemetry::trace::{SpanKind, SpanRef, TraceContextExt};
-use opentelemetry::{global, Context};
+use opentelemetry::{Context, global};
 use opentelemetry::{
+    KeyValue,
     propagation::Extractor,
     trace::{Span, Tracer},
-    KeyValue,
 };
 // use opentelemetry_otlp::tonic_types;
 use std::collections::HashMap;
@@ -46,10 +46,10 @@ impl Extractor for MetadataMap<'_> {
 impl Injector for MetadataMutMap<'_> {
     /// Set a key and value in the MetadataMap.  Does nothing if the key or value are not valid inputs
     fn set(&mut self, key: &str, value: String) {
-        if let Ok(key) = tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
-            if let Ok(val) = tonic::metadata::MetadataValue::try_from(&value) {
-                self.0.insert(key, val);
-            }
+        if let Ok(key) = tonic::metadata::MetadataKey::from_bytes(key.as_bytes())
+            && let Ok(val) = tonic::metadata::MetadataValue::try_from(&value)
+        {
+            self.0.insert(key, val);
         }
     }
 }
@@ -122,11 +122,11 @@ pub trait Tracing {
         span.set_attribute(KeyValue::new("service.method", span_name));
         span.set_attribute(KeyValue::new("request", format!("{request:?}")));
 
-        if let Some(req_path) = request.metadata().get("path") {
-            if let Ok(path_str) = req_path.to_str() {
-                // Clone the string to own it, avoiding reference lifetime issues
-                span.set_attribute(KeyValue::new("request.path", path_str.to_string()));
-            }
+        if let Some(req_path) = request.metadata().get("path")
+            && let Ok(path_str) = req_path.to_str()
+        {
+            // Clone the string to own it, avoiding reference lifetime issues
+            span.set_attribute(KeyValue::new("request.path", path_str.to_string()));
         }
 
         span

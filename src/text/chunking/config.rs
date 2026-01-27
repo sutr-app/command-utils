@@ -457,10 +457,10 @@ mod tests {
             token_pos: usize,
         ) -> Result<Option<usize>, Self::Error> {
             let char_pos = token_pos.checked_mul(4);
-            if let Some(pos) = char_pos {
-                if pos <= text.len() {
-                    return Ok(Some(pos));
-                }
+            if let Some(pos) = char_pos
+                && pos <= text.len()
+            {
+                return Ok(Some(pos));
             }
             Ok(None)
         }

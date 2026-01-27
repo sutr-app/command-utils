@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
-use encoding::label::encoding_from_whatwg_label;
+use anyhow::{Result, anyhow};
 use encoding::DecoderTrap;
+use encoding::label::encoding_from_whatwg_label;
 
 /// read to end and detect char-encoding and decode to utf-8
 /// (ignore unknown character)

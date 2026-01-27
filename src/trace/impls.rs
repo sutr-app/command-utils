@@ -3,9 +3,9 @@ use super::{
     otel_span::{GenAIOtelClient, RemoteSpanClient},
 };
 use opentelemetry::{
+    Context, KeyValue,
     global::{self, BoxedTracer},
     trace::{SpanBuilder, SpanKind, Tracer},
-    Context, KeyValue,
 };
 
 /// Generic OpenTelemetry client implementation
@@ -155,26 +155,26 @@ impl GenAIOtelClient for GenericOtelClient {
         }
 
         // Input/output data as JSON strings and gen_ai.prompt/completion attributes
-        if let Some(ref input) = attributes.data.input {
-            if let Ok(input_str) = serde_json::to_string(input) {
-                key_values.push(KeyValue::new(
-                    "langfuse.observation.input",
-                    input_str.clone(),
-                ));
-                // Add gen_ai.prompt for OpenTelemetry compatibility
-                key_values.push(KeyValue::new("gen_ai.prompt", input_str));
-            }
+        if let Some(ref input) = attributes.data.input
+            && let Ok(input_str) = serde_json::to_string(input)
+        {
+            key_values.push(KeyValue::new(
+                "langfuse.observation.input",
+                input_str.clone(),
+            ));
+            // Add gen_ai.prompt for OpenTelemetry compatibility
+            key_values.push(KeyValue::new("gen_ai.prompt", input_str));
         }
 
-        if let Some(ref output) = attributes.data.output {
-            if let Ok(output_str) = serde_json::to_string(output) {
-                key_values.push(KeyValue::new(
-                    "langfuse.observation.output",
-                    output_str.clone(),
-                ));
-                // Add gen_ai.completion for OpenTelemetry compatibility
-                key_values.push(KeyValue::new("gen_ai.completion", output_str));
-            }
+        if let Some(ref output) = attributes.data.output
+            && let Ok(output_str) = serde_json::to_string(output)
+        {
+            key_values.push(KeyValue::new(
+                "langfuse.observation.output",
+                output_str.clone(),
+            ));
+            // Add gen_ai.completion for OpenTelemetry compatibility
+            key_values.push(KeyValue::new("gen_ai.completion", output_str));
         }
 
         // Metadata with proper Langfuse naming
@@ -190,13 +190,13 @@ impl GenAIOtelClient for GenericOtelClient {
         }
 
         // Model parameters as JSON string
-        if let Some(model_parameters) = attributes.model_parameters {
-            if let Ok(params_str) = serde_json::to_string(&model_parameters) {
-                key_values.push(KeyValue::new(
-                    "langfuse.observation.model_parameters",
-                    params_str,
-                ));
-            }
+        if let Some(model_parameters) = attributes.model_parameters
+            && let Ok(params_str) = serde_json::to_string(&model_parameters)
+        {
+            key_values.push(KeyValue::new(
+                "langfuse.observation.model_parameters",
+                params_str,
+            ));
         }
 
         // Usage details as JSON string and individual gen_ai.usage.* attributes
@@ -267,16 +267,16 @@ impl GenAIOtelClient for GenericOtelClient {
             key_values.push(KeyValue::new("langfuse.trace.name", trace_name));
         }
 
-        if let Some(trace_input) = attributes.trace_input {
-            if let Ok(input_str) = serde_json::to_string(&trace_input) {
-                key_values.push(KeyValue::new("langfuse.trace.input", input_str));
-            }
+        if let Some(trace_input) = attributes.trace_input
+            && let Ok(input_str) = serde_json::to_string(&trace_input)
+        {
+            key_values.push(KeyValue::new("langfuse.trace.input", input_str));
         }
 
-        if let Some(trace_output) = attributes.trace_output {
-            if let Ok(output_str) = serde_json::to_string(&trace_output) {
-                key_values.push(KeyValue::new("langfuse.trace.output", output_str));
-            }
+        if let Some(trace_output) = attributes.trace_output
+            && let Ok(output_str) = serde_json::to_string(&trace_output)
+        {
+            key_values.push(KeyValue::new("langfuse.trace.output", output_str));
         }
 
         if !attributes.trace_tags.is_empty() {

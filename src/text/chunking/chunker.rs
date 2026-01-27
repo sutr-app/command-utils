@@ -832,8 +832,11 @@ impl<T: TokenProvider> HierarchicalChunker<T> {
                 );
                 current_token_pos += chunk_token_count;
             } else {
-                warn!("Not enough token spans for chunk positioning: need {} tokens, have {} remaining",
-                    chunk_token_count, token_spans.len() - current_token_pos);
+                warn!(
+                    "Not enough token spans for chunk positioning: need {} tokens, have {} remaining",
+                    chunk_token_count,
+                    token_spans.len() - current_token_pos
+                );
                 // Fallback to estimated positioning
                 let estimated_start = if current_token_pos < token_spans.len() {
                     token_spans[current_token_pos].0
@@ -1217,7 +1220,7 @@ mod tests {
 
         let stats = chunker.statistics();
         assert_eq!(chunks.len(), 2); // Should have 2 chunks now
-                                     // Processing time might be 0 for fast operations on small text
+        // Processing time might be 0 for fast operations on small text
         assert!(stats.total_processing_time.as_nanos() > 0);
         assert_eq!(stats.input_char_count, text.len());
         assert!(stats.detected_paragraph_count > 0);
@@ -1275,13 +1278,17 @@ mod tests {
         }
 
         let stats = chunker.statistics();
-        assert!(stats
-            .custom_metrics
-            .contains_key("batch_processing_time_ms"));
+        assert!(
+            stats
+                .custom_metrics
+                .contains_key("batch_processing_time_ms")
+        );
         assert!(stats.custom_metrics.contains_key("batch_total_input_chars"));
-        assert!(stats
-            .custom_metrics
-            .contains_key("batch_total_output_chunks"));
+        assert!(
+            stats
+                .custom_metrics
+                .contains_key("batch_total_output_chunks")
+        );
     }
 
     #[test]
@@ -1638,7 +1645,11 @@ mod tests {
                     // Allow for minor whitespace differences in processing
                     actual_trimmed.replace(&[' ', '\t', '\n'][..], "") == expected_trimmed.replace(&[' ', '\t', '\n'][..], ""),
                     "Chunk {} content mismatch:\nActual: {:?}\nExpected from positions: {:?}\nPositions: {}-{}",
-                    i, chunk.content, expected_content, chunk.char_start, chunk.char_end
+                    i,
+                    chunk.content,
+                    expected_content,
+                    chunk.char_start,
+                    chunk.char_end
                 );
             }
         }
@@ -1654,7 +1665,7 @@ mod tests {
         let uncovered_count = covered_chars
             .iter()
             .enumerate()
-            .filter(|(i, &covered)| {
+            .filter(|&(ref i, &covered)| {
                 !covered && *i < text_chars.len() && !text_chars[*i].is_whitespace()
             })
             .count();
@@ -1683,7 +1694,11 @@ mod tests {
             assert!(
                 chunk.tokens.len() <= config.max_chunk_tokens,
                 "Chunk {} has {} tokens but max_chunk_tokens is {}. Chunk type: {:?}, Content: {:?}",
-                i, chunk.tokens.len(), config.max_chunk_tokens, chunk.chunk_type, chunk.content
+                i,
+                chunk.tokens.len(),
+                config.max_chunk_tokens,
+                chunk.chunk_type,
+                chunk.content
             );
         }
     }

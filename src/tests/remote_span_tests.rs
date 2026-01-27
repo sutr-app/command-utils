@@ -10,8 +10,8 @@ use std::time::Duration;
 /// Test remote child span with successful operation and response parsing
 #[tokio::test]
 #[ignore = "Integration test requiring OTLP endpoint - run with --ignored"]
-async fn test_remote_child_span_result_with_response_parser(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_remote_child_span_result_with_response_parser()
+-> Result<(), Box<dyn std::error::Error>> {
     let client = Arc::new(setup_integration_test().await?);
 
     // Test unique ID for this test run
@@ -481,9 +481,11 @@ async fn test_distributed_error_propagation() -> Result<(), Box<dyn std::error::
 
     assert!(service_b_result.is_err());
     let error = service_b_result.unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("Critical failure in downstream service"));
+    assert!(
+        error
+            .to_string()
+            .contains("Critical failure in downstream service")
+    );
 
     tracing::info!(
         service_a_result = ?service_a_result.unwrap(),

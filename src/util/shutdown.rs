@@ -52,7 +52,7 @@ pub fn create_lock_and_wait() -> (ShutdownLock, ShutdownWait) {
 pub async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         let mut sigint = signal(SignalKind::interrupt()).expect("failed to create SIGINT handler");
         let mut sigterm =

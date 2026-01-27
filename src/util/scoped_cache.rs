@@ -60,7 +60,7 @@ where
 // `cache(key) { heavy_computation() }` という形式で使えるようにするためのマクロ
 #[macro_export]
 macro_rules! cache {
-    ($cache:expr, $key:expr, $heavy_computation:expr) => {
+    ($cache:expr_2021, $key:expr_2021, $heavy_computation:expr_2021) => {
         if let Some(value) = $cache.get(&$key).await {
             value
         } else {
@@ -74,7 +74,7 @@ macro_rules! cache {
 // allowing usage in the form `cache_ok(key) { heavy_computation_result() }`
 #[macro_export]
 macro_rules! cache_ok {
-    ($cache:expr, $key:expr, $heavy_computation_result:expr) => {
+    ($cache:expr_2021, $key:expr_2021, $heavy_computation_result:expr_2021) => {
         if let Some(value) = $cache.get(&$key).await {
             Ok(value)
         } else {

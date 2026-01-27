@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -137,10 +137,10 @@ impl SchemaCombiner {
             // XXX clone
             let mut schema_obj = schema.clone();
 
-            if let Some(desc) = self.descriptions.get(name) {
-                if let Value::Object(ref mut obj) = schema_obj {
-                    obj.insert("description".to_string(), Value::String(desc.clone()));
-                }
+            if let Some(desc) = self.descriptions.get(name)
+                && let Value::Object(ref mut obj) = schema_obj
+            {
+                obj.insert("description".to_string(), Value::String(desc.clone()));
             }
 
             properties_map.insert(name.clone(), schema_obj);

@@ -1,9 +1,8 @@
 use crate::util::id_generator::iputil;
 use anyhow::{Context, Result};
-use opentelemetry::global;
 use opentelemetry::KeyValue;
+use opentelemetry::global;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::tonic_types;
 use opentelemetry_otlp::LogExporter;
 use opentelemetry_otlp::MetricExporter;
 use opentelemetry_otlp::SpanExporter;
@@ -11,6 +10,7 @@ use opentelemetry_otlp::WithExportConfig;
 #[cfg(feature = "otlp-http")]
 use opentelemetry_otlp::WithHttpConfig;
 use opentelemetry_otlp::WithTonicConfig;
+use opentelemetry_otlp::tonic_types;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
@@ -26,9 +26,9 @@ use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::OnceCell;
 use tracing::Subscriber;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::Layer;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::{filter, prelude::*};
 
 // default name (fixed)
@@ -302,7 +302,9 @@ async fn create_otlp_logger_provider_layer_from_env(
                         }
                         #[cfg(not(feature = "otlp-http"))]
                         {
-                            tracing::warn!("gRPC failed and HTTP OTLP export not enabled. Compile with 'otlp-http' feature for HTTP fallback.");
+                            tracing::warn!(
+                                "gRPC failed and HTTP OTLP export not enabled. Compile with 'otlp-http' feature for HTTP fallback."
+                            );
                             return None;
                         }
                     } else {

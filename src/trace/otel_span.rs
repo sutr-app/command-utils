@@ -1,8 +1,8 @@
 use super::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
 use opentelemetry::{
+    Context,
     global::BoxedTracer,
     trace::{Span, SpanBuilder},
-    Context,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -321,35 +321,34 @@ pub trait GenAIOtelClient: Send + Sync {
         S: opentelemetry::trace::Span,
     {
         // Set observation output (external API call result)
-        if let Some(ref output) = response_attributes.data.output {
-            if let Ok(output_str) = serde_json::to_string(output) {
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "langfuse.observation.output",
-                    output_str,
-                ));
-            }
+        if let Some(ref output) = response_attributes.data.output
+            && let Ok(output_str) = serde_json::to_string(output)
+        {
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "langfuse.observation.output",
+                output_str,
+            ));
         }
 
         // Set completion output (LLM specific)
-        if let Some(ref metadata) = response_attributes.data.metadata {
-            if let Some(completion_output) = metadata.get("completion_output") {
-                if let Ok(completion_str) = serde_json::to_string(completion_output) {
-                    span.set_attribute(opentelemetry::KeyValue::new(
-                        "gen_ai.completion",
-                        completion_str,
-                    ));
-                }
-            }
+        if let Some(ref metadata) = response_attributes.data.metadata
+            && let Some(completion_output) = metadata.get("completion_output")
+            && let Ok(completion_str) = serde_json::to_string(completion_output)
+        {
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "gen_ai.completion",
+                completion_str,
+            ));
         }
 
         // Set trace output (main processing result)
-        if let Some(ref trace_output) = response_attributes.trace_output {
-            if let Ok(trace_str) = serde_json::to_string(trace_output) {
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "langfuse.trace.output",
-                    trace_str,
-                ));
-            }
+        if let Some(ref trace_output) = response_attributes.trace_output
+            && let Ok(trace_str) = serde_json::to_string(trace_output)
+        {
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "langfuse.trace.output",
+                trace_str,
+            ));
         }
     }
 
@@ -558,37 +557,34 @@ pub trait RemoteSpanClient: GenAIOtelClient + Send + Sync {
                         if let Some(response_attributes) = parser(success_value) {
                             // For SpanRef, we need to set attributes directly without helper method
                             // Set observation output (external API call result)
-                            if let Some(ref output) = response_attributes.data.output {
-                                if let Ok(output_str) = serde_json::to_string(output) {
-                                    span.set_attribute(opentelemetry::KeyValue::new(
-                                        "langfuse.observation.output",
-                                        output_str,
-                                    ));
-                                }
+                            if let Some(ref output) = response_attributes.data.output
+                                && let Ok(output_str) = serde_json::to_string(output)
+                            {
+                                span.set_attribute(opentelemetry::KeyValue::new(
+                                    "langfuse.observation.output",
+                                    output_str,
+                                ));
                             }
 
                             // Set completion output (LLM specific)
-                            if let Some(ref metadata) = response_attributes.data.metadata {
-                                if let Some(completion_output) = metadata.get("completion_output") {
-                                    if let Ok(completion_str) =
-                                        serde_json::to_string(completion_output)
-                                    {
-                                        span.set_attribute(opentelemetry::KeyValue::new(
-                                            "gen_ai.completion",
-                                            completion_str,
-                                        ));
-                                    }
-                                }
+                            if let Some(ref metadata) = response_attributes.data.metadata
+                                && let Some(completion_output) = metadata.get("completion_output")
+                                && let Ok(completion_str) = serde_json::to_string(completion_output)
+                            {
+                                span.set_attribute(opentelemetry::KeyValue::new(
+                                    "gen_ai.completion",
+                                    completion_str,
+                                ));
                             }
 
                             // Set trace output (main processing result)
-                            if let Some(ref trace_output) = response_attributes.trace_output {
-                                if let Ok(trace_str) = serde_json::to_string(trace_output) {
-                                    span.set_attribute(opentelemetry::KeyValue::new(
-                                        "langfuse.trace.output",
-                                        trace_str,
-                                    ));
-                                }
+                            if let Some(ref trace_output) = response_attributes.trace_output
+                                && let Ok(trace_str) = serde_json::to_string(trace_output)
+                            {
+                                span.set_attribute(opentelemetry::KeyValue::new(
+                                    "langfuse.trace.output",
+                                    trace_str,
+                                ));
                             }
 
                             // Create response event span as child of current span
@@ -605,7 +601,8 @@ pub trait RemoteSpanClient: GenAIOtelClient + Send + Sync {
                             // Log response information
                             tracing::debug!(
                                 parent_span_id = span.span_context().span_id().to_string(),
-                                response_span_id = response_span.span_context().span_id().to_string(),
+                                response_span_id =
+                                    response_span.span_context().span_id().to_string(),
                                 "Remote response event span created as child of successful remote child span"
                             );
 

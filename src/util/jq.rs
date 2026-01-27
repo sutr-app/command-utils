@@ -3,10 +3,10 @@
 
 //! Library to hide details of jaq from the rest of weaver.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use jaq_core::{
-    load::{Arena, File, Loader},
     Ctx, Native, RcIter,
+    load::{Arena, File, Loader},
 };
 use jaq_json::Val;
 use std::{collections::BTreeMap, sync::Arc};

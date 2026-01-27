@@ -18,7 +18,8 @@ pub mod test_utils {
         // We're explicitly setting the OTLP endpoint for the test
         let otlp_addr = "http://otel-collector.default.svc.cluster.local:4317".to_string();
         // Force override any existing configuration
-        std::env::set_var("OTLP_ADDR", &otlp_addr);
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("OTLP_ADDR", &otlp_addr) };
 
         println!("Running integration test with OTLP endpoint: {otlp_addr}");
 

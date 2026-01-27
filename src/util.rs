@@ -267,11 +267,7 @@ pub mod string {
     impl ToOption<String> for String {
         #[inline]
         fn to_option(self) -> Option<String> {
-            if self.is_empty() {
-                None
-            } else {
-                Some(self)
-            }
+            if self.is_empty() { None } else { Some(self) }
         }
     }
 }
@@ -295,7 +291,7 @@ pub mod string {
 // }
 
 pub mod datetime {
-    use anyhow::{anyhow, Context, Result};
+    use anyhow::{Context, Result, anyhow};
     use chrono::{DateTime, Datelike, FixedOffset, LocalResult, TimeZone, Utc};
     use once_cell::sync::Lazy;
     use regex::Regex;
@@ -387,7 +383,7 @@ pub mod datetime {
         datetime_regex: &Option<String>,
     ) -> Result<Option<DateTime<FixedOffset>>, anyhow::Error> {
         std::panic::catch_unwind(move || {
-            let dt = match datetime_regex {
+            match datetime_regex {
                 Some(fmt) if !fmt.is_empty() => {
                     let now = self::now();
                     Regex::new(fmt.as_str())
@@ -410,8 +406,7 @@ pub mod datetime {
                     .or_else(|_| DateTime::parse_from_str(dt_value, "%+"))
                     .map(Some)
                     .context("on parse rf3339"),
-            };
-            dt
+            }
         })
         .map_err(|e| {
             tracing::error!("caught panic: {:?}", e);
@@ -421,7 +416,7 @@ pub mod datetime {
     }
 }
 pub mod text {
-    use anyhow::{anyhow, Result};
+    use anyhow::{Result, anyhow};
     use regex::Regex;
 
     // https://stackoverflow.com/a/6041965
@@ -540,10 +535,10 @@ pub mod text {
                 vec!["あいうiえ", "お😁かきく", "jけこ🤨さ", "しすkせそ", "."]
             );
             // Remove the last element from parts if it's shorter than a certain length
-            if let Some(last_part) = parts.last() {
-                if last_part.chars().count() < 3 {
-                    parts.pop();
-                }
+            if let Some(last_part) = parts.last()
+                && last_part.chars().count() < 3
+            {
+                parts.pop();
             }
             assert_eq!(
                 parts,
@@ -557,17 +552,17 @@ pub mod text {
 
 pub mod json {
     pub fn merge(a: &mut serde_json::Value, b: serde_json::Value) {
-        if let serde_json::Value::Object(a) = a {
-            if let serde_json::Value::Object(b) = b {
-                for (k, v) in b {
-                    if v.is_null() {
-                        a.remove(&k);
-                    } else {
-                        merge(a.entry(k).or_insert(serde_json::Value::Null), v);
-                    }
+        if let serde_json::Value::Object(a) = a
+            && let serde_json::Value::Object(b) = b
+        {
+            for (k, v) in b {
+                if v.is_null() {
+                    a.remove(&k);
+                } else {
+                    merge(a.entry(k).or_insert(serde_json::Value::Null), v);
                 }
-                return;
             }
+            return;
         }
 
         *a = b;
