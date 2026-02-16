@@ -78,7 +78,7 @@ pub fn create_tokenizer(dict: Dictionary) -> Result<Tokenizer> {
 /// - UniDic: 17+ fields, reading in katakana at field[6]
 pub fn detect_dict_type(tokenizer: &Tokenizer) -> DictType {
     let mut worker = tokenizer.new_worker();
-    worker.reset_sentence("a");
+    worker.reset_sentence("の");
     worker.tokenize();
     if worker.num_tokens() > 0 {
         let field_count = worker.token(0).feature().split(',').count();
@@ -185,9 +185,8 @@ fn extract_field<'a>(fields: &[&'a str], index: usize) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    fn get_tokenizer() -> Option<(Arc<Tokenizer>, DictType)> {
+    fn get_tokenizer() -> Option<(Tokenizer, DictType)> {
         let dict_path = std::env::var("VIBRATO_DICT_PATH").ok()?;
         let dict = load_dictionary(Path::new(&dict_path))
             .inspect_err(|e| eprintln!("error: {:?}", e))
@@ -197,7 +196,36 @@ mod tests {
             .ok()?;
         let dict_type = detect_dict_type(&tokenizer);
         eprintln!("detected dict_type: {:?}", dict_type);
-        Some((Arc::new(tokenizer), dict_type))
+        Some((tokenizer, dict_type))
+    }
+
+    #[test]
+    fn test_hiragana_to_katakana() {
+        assert_eq!(hiragana_to_katakana("あいうえお"), "アイウエオ");
+        assert_eq!(hiragana_to_katakana("かきくけこ"), "カキクケコ");
+        assert_eq!(hiragana_to_katakana("ぁぃぅぇぉ"), "ァィゥェォ");
+        // katakana and ASCII pass through unchanged
+        assert_eq!(hiragana_to_katakana("カタカナ"), "カタカナ");
+        assert_eq!(hiragana_to_katakana("abc"), "abc");
+        // mixed
+        assert_eq!(hiragana_to_katakana("あaカ"), "アaカ");
+        assert_eq!(hiragana_to_katakana(""), "");
+    }
+
+    #[test]
+    fn test_extract_field() {
+        let fields = vec!["名詞", "一般", "*", "*", "*", "*", "東京", "トウキョウ", "トーキョー"];
+        assert_eq!(extract_field(&fields, 7), Some("トウキョウ"));
+        assert_eq!(extract_field(&fields, 2), None); // "*" treated as empty
+        assert_eq!(extract_field(&fields, 99), None); // out of bounds
+        assert_eq!(extract_field(&fields, 0), Some("名詞"));
+
+        let empty_fields: Vec<&str> = vec![];
+        assert_eq!(extract_field(&empty_fields, 0), None);
+
+        let whitespace = vec!["  ", " foo "];
+        assert_eq!(extract_field(&whitespace, 0), None); // whitespace-only
+        assert_eq!(extract_field(&whitespace, 1), Some("foo")); // trimmed
     }
 
     #[test]

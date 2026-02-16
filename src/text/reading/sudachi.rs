@@ -57,14 +57,13 @@ pub fn to_katakana_reading_with_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    fn get_dict() -> Option<Arc<JapaneseDictionary>> {
+    fn get_dict() -> Option<JapaneseDictionary> {
         let dict_path = std::env::var("SUDACHI_DICT_PATH").ok()?;
         let dict = load_dictionary(Path::new(&dict_path))
             .inspect_err(|e| eprintln!("error: {:?}", e))
             .ok()?;
-        Some(Arc::new(dict))
+        Some(dict)
     }
 
     #[test]
