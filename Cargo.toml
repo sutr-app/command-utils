@@ -50,6 +50,7 @@ tempfile = "3"
 thiserror = { version = "2" }
 tonic-prost-build = { version = "0.14" }
 sudachi = { git = "https://github.com/WorksApplications/sudachi.rs", optional = true }
+vibrato = { version = "0.5", optional = true }
 tonic = "0.14"
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1" }
@@ -63,7 +64,9 @@ tracing-subscriber = { version = "0.3", features = [
 [features]
 default = ["otlp-http"]
 otlp-http = ["opentelemetry-otlp/http-proto"]
-reading = ["sudachi"]
+reading = ["reading-sudachi"]
+reading-sudachi = ["dep:sudachi"]
+reading-vibrato = ["dep:vibrato"]
 
 [dev-dependencies]
 itertools = { version = "0.14" }
