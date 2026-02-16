@@ -64,9 +64,9 @@ tracing-subscriber = { version = "0.3", features = [
 [features]
 default = ["otlp-http"]
 otlp-http = ["opentelemetry-otlp/http-proto"]
-reading = ["reading-sudachi"]
-reading-sudachi = ["dep:sudachi"]
-reading-vibrato = ["dep:vibrato"]
+reading = ["sudachi"]
+sudachi = ["dep:sudachi"]
+vibrato = ["dep:vibrato"]
 
 [dev-dependencies]
 itertools = { version = "0.14" }

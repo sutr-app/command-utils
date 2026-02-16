@@ -11,7 +11,7 @@ use crate::util::datetime;
 // 新規追加: 階層的チャンキング機能
 pub mod chunking;
 
-#[cfg(any(feature = "reading-sudachi", feature = "reading-vibrato"))]
+#[cfg(any(feature = "sudachi", feature = "vibrato"))]
 pub mod reading;
 
 // for deserialize from env
