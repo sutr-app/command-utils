@@ -76,20 +76,21 @@ pub fn create_tokenizer(dict: Dictionary) -> Result<Tokenizer> {
 /// - JumanDic: 7 fields, reading in hiragana at field[5]
 /// - IPAdic: ~9 fields, reading in katakana at field[7]
 /// - UniDic: 17+ fields, reading in katakana at field[6]
-pub fn detect_dict_type(tokenizer: &Tokenizer) -> DictType {
+pub fn detect_dict_type(tokenizer: &Tokenizer) -> Result<DictType> {
     let mut worker = tokenizer.new_worker();
     worker.reset_sentence("の");
     worker.tokenize();
-    if worker.num_tokens() > 0 {
-        let field_count = worker.token(0).feature().split(',').count();
-        if field_count >= 13 {
-            return DictType::UniDic;
-        }
-        if field_count <= 7 {
-            return DictType::JumanDic;
-        }
+    if worker.num_tokens() == 0 {
+        anyhow::bail!("dictionary detection failed: tokenizer returned 0 tokens for probe input");
     }
-    DictType::IpaDic
+    let field_count = worker.token(0).feature().split(',').count();
+    if field_count >= 13 {
+        return Ok(DictType::UniDic);
+    }
+    if field_count <= 7 {
+        return Ok(DictType::JumanDic);
+    }
+    Ok(DictType::IpaDic)
 }
 
 /// Convert Japanese text to katakana pronunciation.
@@ -147,9 +148,8 @@ fn to_katakana_by_field(
         let surface = token.surface();
         let feature = token.feature();
 
-        let fields: Vec<&str> = feature.split(',').collect();
-        let reading = extract_field(&fields, primary_index)
-            .or_else(|| fallback_index.and_then(|idx| extract_field(&fields, idx)));
+        let reading = extract_field(feature, primary_index)
+            .or_else(|| fallback_index.and_then(|idx| extract_field(feature, idx)));
 
         match reading {
             Some(r) if convert_hiragana => result.push_str(&hiragana_to_katakana(r)),
@@ -170,9 +170,9 @@ fn hiragana_to_katakana(s: &str) -> String {
         .collect()
 }
 
-/// Extract a non-empty, non-wildcard field value from feature fields.
-fn extract_field<'a>(fields: &[&'a str], index: usize) -> Option<&'a str> {
-    fields.get(index).and_then(|f| {
+/// Extract a non-empty, non-wildcard field value from a comma-separated feature string.
+fn extract_field(feature: &str, index: usize) -> Option<&str> {
+    feature.split(',').nth(index).and_then(|f| {
         let f = f.trim();
         if f.is_empty() || f == "*" {
             None
@@ -194,7 +194,9 @@ mod tests {
         let tokenizer = create_tokenizer(dict)
             .inspect_err(|e| eprintln!("error: {:?}", e))
             .ok()?;
-        let dict_type = detect_dict_type(&tokenizer);
+        let dict_type = detect_dict_type(&tokenizer)
+            .inspect_err(|e| eprintln!("error: {:?}", e))
+            .ok()?;
         eprintln!("detected dict_type: {:?}", dict_type);
         Some((tokenizer, dict_type))
     }
@@ -214,28 +216,17 @@ mod tests {
 
     #[test]
     fn test_extract_field() {
-        let fields = vec![
-            "名詞",
-            "一般",
-            "*",
-            "*",
-            "*",
-            "*",
-            "東京",
-            "トウキョウ",
-            "トーキョー",
-        ];
-        assert_eq!(extract_field(&fields, 7), Some("トウキョウ"));
-        assert_eq!(extract_field(&fields, 2), None); // "*" treated as empty
-        assert_eq!(extract_field(&fields, 99), None); // out of bounds
-        assert_eq!(extract_field(&fields, 0), Some("名詞"));
+        let feature = "名詞,一般,*,*,*,*,東京,トウキョウ,トーキョー";
+        assert_eq!(extract_field(feature, 7), Some("トウキョウ"));
+        assert_eq!(extract_field(feature, 2), None); // "*" treated as empty
+        assert_eq!(extract_field(feature, 99), None); // out of bounds
+        assert_eq!(extract_field(feature, 0), Some("名詞"));
 
-        let empty_fields: Vec<&str> = vec![];
-        assert_eq!(extract_field(&empty_fields, 0), None);
+        assert_eq!(extract_field("", 0), None); // empty string
 
-        let whitespace = vec!["  ", " foo "];
-        assert_eq!(extract_field(&whitespace, 0), None); // whitespace-only
-        assert_eq!(extract_field(&whitespace, 1), Some("foo")); // trimmed
+        let whitespace = "  , foo ";
+        assert_eq!(extract_field(whitespace, 0), None); // whitespace-only
+        assert_eq!(extract_field(whitespace, 1), Some("foo")); // trimmed
     }
 
     #[test]
