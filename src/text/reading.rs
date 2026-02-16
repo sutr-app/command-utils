@@ -4,14 +4,16 @@ use std::path::Path;
 pub use sudachi::analysis::Mode;
 pub use sudachi::dic::dictionary::JapaneseDictionary;
 
-use sudachi::analysis::stateless_tokenizer::StatelessTokenizer;
 use sudachi::analysis::Tokenize;
+use sudachi::analysis::stateless_tokenizer::StatelessTokenizer;
 use sudachi::config::Config;
 
 /// Load a JapaneseDictionary from the specified dictionary file path.
+/// Uses sudachi's built-in resources (char.def, unk.def, etc.) so only the .dic file is needed.
 pub fn load_dictionary(dict_path: &Path) -> Result<JapaneseDictionary> {
-    let config = Config::minimal_at(dict_path.parent().unwrap_or(Path::new(".")))
-        .with_system_dic(dict_path);
+    let mut config = Config::new_embedded()
+        .with_context(|| "failed to create embedded sudachi config")?;
+    config.system_dict = Some(dict_path.to_path_buf());
     JapaneseDictionary::from_cfg(&config)
         .with_context(|| format!("failed to load sudachi dictionary from {:?}", dict_path))
 }
@@ -59,7 +61,9 @@ mod tests {
 
     fn get_dict() -> Option<Arc<JapaneseDictionary>> {
         let dict_path = std::env::var("SUDACHI_DICT_PATH").ok()?;
-        let dict = load_dictionary(Path::new(&dict_path)).ok()?;
+        let dict = load_dictionary(Path::new(&dict_path))
+            .inspect_err(|e| eprintln!("error: {:?}", e))
+            .ok()?;
         Some(Arc::new(dict))
     }
 
@@ -79,6 +83,22 @@ mod tests {
         };
         let result = to_katakana_reading(&dict, "漢字").unwrap();
         assert_eq!(result, "カンジ");
+    }
+
+    #[test]
+    fn test_basic_kanji_reading2() {
+        let Some(dict) = get_dict() else {
+            eprintln!("SUDACHI_DICT_PATH not set, skipping");
+            return;
+        };
+        let text = "今日の天気は晴、ところにより一時雨。 降水確率は40パーセントです";
+        let result = to_katakana_reading(&dict, text).unwrap();
+        println!("result:{}", result);
+        // Verify the output is non-empty katakana
+        assert!(!result.is_empty());
+        assert!(result.contains("キョウ"));
+        assert!(result.contains("テンキ"));
+        assert!(result.contains("コウスイカクリツ"));
     }
 
     #[test]
