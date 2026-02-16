@@ -11,8 +11,8 @@ use sudachi::config::Config;
 /// Load a JapaneseDictionary from the specified dictionary file path.
 /// Uses sudachi's built-in resources (char.def, unk.def, etc.) so only the .dic file is needed.
 pub fn load_dictionary(dict_path: &Path) -> Result<JapaneseDictionary> {
-    let mut config = Config::new_embedded()
-        .with_context(|| "failed to create embedded sudachi config")?;
+    let mut config =
+        Config::new_embedded().with_context(|| "failed to create embedded sudachi config")?;
     config.system_dict = Some(dict_path.to_path_buf());
     JapaneseDictionary::from_cfg(&config)
         .with_context(|| format!("failed to load sudachi dictionary from {:?}", dict_path))

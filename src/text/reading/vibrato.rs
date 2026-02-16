@@ -214,7 +214,17 @@ mod tests {
 
     #[test]
     fn test_extract_field() {
-        let fields = vec!["名詞", "一般", "*", "*", "*", "*", "東京", "トウキョウ", "トーキョー"];
+        let fields = vec![
+            "名詞",
+            "一般",
+            "*",
+            "*",
+            "*",
+            "*",
+            "東京",
+            "トウキョウ",
+            "トーキョー",
+        ];
         assert_eq!(extract_field(&fields, 7), Some("トウキョウ"));
         assert_eq!(extract_field(&fields, 2), None); // "*" treated as empty
         assert_eq!(extract_field(&fields, 99), None); // out of bounds
