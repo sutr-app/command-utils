@@ -46,10 +46,13 @@ regex = { version = "1" }
 rs-snowflake = { version = "0.6" }
 serde = { version = "1" }
 serde_json = "1.0"
+sudachi = { git = "https://github.com/WorksApplications/sudachi.rs", rev = "5e8cc9250a712aa328a43381f7a9eb7f245bdd4a", optional = true }
 tempfile = "3"
 thiserror = { version = "2" }
-tonic-prost-build = { version = "0.14" }
 tonic = "0.14"
+tonic-prost-build = { version = "0.14" }
+vibrato = { version = "0.5", optional = true }
+zstd = { version = "0.13", optional = true }
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1" }
 tracing-opentelemetry = { version = "0.32" }
@@ -62,6 +65,10 @@ tracing-subscriber = { version = "0.3", features = [
 [features]
 default = ["otlp-http"]
 otlp-http = ["opentelemetry-otlp/http-proto"]
+# alias: enables sudachi reading support (use "vibrato" feature for vibrato support)
+reading = ["sudachi"]
+sudachi = ["dep:sudachi"]
+vibrato = ["dep:vibrato", "dep:zstd"]
 
 [dev-dependencies]
 itertools = { version = "0.14" }

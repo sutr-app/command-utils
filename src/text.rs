@@ -11,6 +11,9 @@ use crate::util::datetime;
 // 新規追加: 階層的チャンキング機能
 pub mod chunking;
 
+#[cfg(any(feature = "sudachi", feature = "vibrato"))]
+pub mod reading;
+
 // for deserialize from env
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct SentenceSplitterCreator {
