@@ -330,10 +330,15 @@ impl ProtobufDescriptor {
 
     /// Returns Some only when the value was actually changed.
     ///
-    /// NOTE: `to_uppercase()` handles simple case normalization (e.g. "running" → "RUNNING"),
-    /// but does not add enum name prefixes (e.g. "system" will NOT become "ROLE_SYSTEM").
-    /// If prefix-based enum matching is needed in the future, extend the `Kind::Enum` arm
-    /// to iterate `enum_desc.values()` and try stripping a common prefix before comparison.
+    /// Normalization strategy (tried in order, first match wins):
+    /// 1. Exact match — no change needed.
+    /// 2. Simple uppercase — e.g. "running" → "RUNNING".
+    /// 3. camelCase to UPPER_SNAKE_CASE — e.g. "runningFast" → "RUNNING_FAST".
+    ///
+    /// NOTE: This does not add enum name prefixes (e.g. "system" will NOT become
+    /// "ROLE_SYSTEM").  If prefix-based matching is needed in the future, extend
+    /// the `Kind::Enum` arm to iterate `enum_desc.values()` and try stripping a
+    /// common prefix before comparison.
     fn normalize_field_value(
         field_desc: &prost_reflect::FieldDescriptor,
         value: &serde_json::Value,
@@ -348,7 +353,14 @@ impl ProtobufDescriptor {
                         if enum_desc.get_value_by_name(&upper).is_some() {
                             Some(serde_json::Value::String(upper))
                         } else {
-                            None
+                            let upper_snake = crate::text::TextUtil::camel_to_upper_snake(s);
+                            if upper_snake != upper
+                                && enum_desc.get_value_by_name(&upper_snake).is_some()
+                            {
+                                Some(serde_json::Value::String(upper_snake))
+                            } else {
+                                None
+                            }
                         }
                     }
                 }
@@ -1177,6 +1189,31 @@ message TestArg {
         let input = serde_json::json!({"status": "pending"});
         let out = roundtrip_json(proto, "Task", &input)?;
         assert_eq!(out["status"], "PENDING");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_camel_case_to_upper_snake() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum TaskStatus { UNKNOWN = 0; RUNNING_FAST = 1; PENDING_REVIEW = 2; HTTP_REQUEST = 3; }
+        message Task { TaskStatus status = 1; }
+        "#;
+        // camelCase → UPPER_SNAKE_CASE
+        let input = serde_json::json!({"status": "runningFast"});
+        let out = roundtrip_json(proto, "Task", &input)?;
+        assert_eq!(out["status"], "RUNNING_FAST");
+
+        // PascalCase → UPPER_SNAKE_CASE
+        let input = serde_json::json!({"status": "PendingReview"});
+        let out = roundtrip_json(proto, "Task", &input)?;
+        assert_eq!(out["status"], "PENDING_REVIEW");
+
+        // Consecutive uppercase acronym
+        let input = serde_json::json!({"status": "HTTPRequest"});
+        let out = roundtrip_json(proto, "Task", &input)?;
+        assert_eq!(out["status"], "HTTP_REQUEST");
+
         Ok(())
     }
 
