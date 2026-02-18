@@ -87,15 +87,17 @@ impl ProtobufDescriptor {
     }
     /// Deserialize JSON string into a DynamicMessage.
     ///
-    /// When `normalize` is true, enum string values are normalized to UPPER_SNAKE_CASE
-    /// before deserialization (case-insensitive enum handling).
-    /// When false, the JSON is deserialized as-is via streaming deserializer.
+    /// When `normalize_enum` is true, enum string values are normalized to
+    /// UPPER_SNAKE_CASE before deserialization (requires parsing JSON into an
+    /// intermediate `serde_json::Value`, which uses more memory).
+    /// When false, a streaming deserializer is used (memory-efficient for
+    /// large payloads such as base64-encoded binary fields).
     pub fn get_message_from_json(
         descriptor: MessageDescriptor,
         json: &str,
-        normalize: bool,
+        normalize_enum: bool,
     ) -> Result<DynamicMessage> {
-        if normalize {
+        if normalize_enum {
             let json_value: serde_json::Value =
                 serde_json::from_str(json).context("Failed to parse JSON string")?;
             let normalized = Self::normalize_enum_values(&descriptor, &json_value);
@@ -139,15 +141,16 @@ impl ProtobufDescriptor {
     }
     /// Decode JSON string directly into a concrete Protobuf type.
     ///
-    /// When `normalize` is true, enum string values are normalized to UPPER_SNAKE_CASE
-    /// before deserialization (case-insensitive enum handling).
-    /// When false, the JSON is deserialized as-is via streaming deserializer.
+    /// When `normalize_enum` is true, enum string values are normalized to
+    /// UPPER_SNAKE_CASE before deserialization (requires intermediate
+    /// `serde_json::Value` allocation).
+    /// When false, a streaming deserializer is used (memory-efficient).
     pub fn decode_from_json<T: ReflectMessage + Default>(
         json: impl AsRef<str>,
-        normalize: bool,
+        normalize_enum: bool,
     ) -> Result<T> {
         let descriptor = T::default().descriptor();
-        let decoded = if normalize {
+        let decoded = if normalize_enum {
             let json_value: serde_json::Value =
                 serde_json::from_str(json.as_ref()).context("Failed to parse JSON string")?;
             let normalized = Self::normalize_enum_values(&descriptor, &json_value);
@@ -259,12 +262,23 @@ impl ProtobufDescriptor {
             prost_reflect::MapKey::String(v) => v.to_string(),
         }
     }
+    /// Convert a JSON Value into protobuf-encoded bytes.
+    ///
+    /// * `normalize_enum` — when true, enum string values are uppercased to
+    ///   match protobuf enum names before deserialization.
+    /// * `ignore_unknown_fields` — when true, unknown JSON keys are silently
+    ///   ignored instead of causing an error.
     pub fn json_value_to_message(
         descriptor: MessageDescriptor,
         json_value: &serde_json::Value,
+        normalize_enum: bool,
         ignore_unknown_fields: bool,
     ) -> Result<Vec<u8>> {
-        let normalized = Self::normalize_enum_values(&descriptor, json_value);
+        let normalized = if normalize_enum {
+            Self::normalize_enum_values(&descriptor, json_value)
+        } else {
+            None
+        };
         let target = normalized.as_ref().unwrap_or(json_value);
         let dynamic_message = if ignore_unknown_fields {
             let options = DeserializeOptions::new().deny_unknown_fields(false);
@@ -274,20 +288,28 @@ impl ProtobufDescriptor {
         }?;
         Ok(dynamic_message.encode_to_vec())
     }
-    /// Convert JSON string to protobuf-encoded bytes using a streaming deserializer.
+    /// Convert JSON string to protobuf-encoded bytes.
     ///
-    /// This does NOT apply enum normalization.  If case-insensitive enum handling
-    /// is needed, parse the JSON into a `serde_json::Value` first and use
-    /// `json_value_to_message` instead.
-    ///
-    /// Streaming avoids building a full `serde_json::Value` tree, keeping memory
-    /// usage proportional to the protobuf message size rather than the JSON size
-    /// (important when the JSON contains large base64-encoded binary fields).
-    pub fn json_to_message(descriptor: MessageDescriptor, json_str: &str) -> Result<Vec<u8>> {
-        let mut deserializer = Deserializer::from_str(json_str);
-        let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-        deserializer.end()?;
-        Ok(dynamic_message.encode_to_vec())
+    /// When `normalize_enum` is false a streaming deserializer is used, avoiding
+    /// an intermediate `serde_json::Value` allocation (memory-efficient for large
+    /// payloads such as base64-encoded binary fields).
+    /// When true the JSON is first parsed into a Value so that enum string values
+    /// can be uppercased to match protobuf enum names.
+    pub fn json_to_message(
+        descriptor: MessageDescriptor,
+        json_str: &str,
+        normalize_enum: bool,
+    ) -> Result<Vec<u8>> {
+        if normalize_enum {
+            let json_value: serde_json::Value =
+                serde_json::from_str(json_str).context("Failed to parse JSON string")?;
+            Self::json_value_to_message(descriptor, &json_value, true, false)
+        } else {
+            let mut deserializer = Deserializer::from_str(json_str);
+            let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
+            deserializer.end()?;
+            Ok(dynamic_message.encode_to_vec())
+        }
     }
 
     /// Normalize enum string values in JSON to match protobuf enum names (UPPER_SNAKE_CASE).
@@ -1099,7 +1121,8 @@ message TestArg {
     ) -> Result<serde_json::Value> {
         let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
         let msg_desc = descriptor.get_message_by_name(message_name).unwrap();
-        let bytes = ProtobufDescriptor::json_value_to_message(msg_desc.clone(), json_value, true)?;
+        let bytes =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), json_value, true, true)?;
         let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
         ProtobufDescriptor::message_to_json_value(&decoded)
     }
@@ -1322,7 +1345,7 @@ message TestArg {
         // use json_value_to_message for case-insensitive enum handling.
         let json_value = serde_json::json!({"role": "user", "text": "hi"});
         let bytes =
-            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &json_value, false)?;
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &json_value, true, false)?;
         let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
         let out = ProtobufDescriptor::message_to_json_value(&decoded)?;
         assert_eq!(out["role"], "USER");
@@ -1341,8 +1364,11 @@ message TestArg {
         "#;
         let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
         let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
-        let result =
-            ProtobufDescriptor::json_to_message(msg_desc, r#"{"role": "user", "text": "hi"}"#);
+        let result = ProtobufDescriptor::json_to_message(
+            msg_desc,
+            r#"{"role": "user", "text": "hi"}"#,
+            false,
+        );
         assert!(
             result.is_err(),
             "streaming json_to_message should not normalize lowercase enums"
@@ -1523,7 +1549,7 @@ message TestArg {
         let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
         // json_to_message delegates with ignore_unknown_fields=false, so unknown fields cause error
         let json_str = r#"{"name": "test", "nonExistent": "value"}"#;
-        let result = ProtobufDescriptor::json_to_message(msg_desc, json_str);
+        let result = ProtobufDescriptor::json_to_message(msg_desc, json_str, false);
         assert!(result.is_err(), "unknown fields should be rejected");
         Ok(())
     }
@@ -1538,7 +1564,8 @@ message TestArg {
         let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
         let input = serde_json::json!({"name": "test", "nonExistent": "value"});
         // With ignore_unknown_fields=true, unknown fields are silently ignored
-        let result = ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, true);
+        let result =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, true, true);
         assert!(result.is_ok());
         let decoded = DynamicMessage::decode(msg_desc, Cursor::new(result?))?;
         let out = ProtobufDescriptor::message_to_json_value(&decoded)?;
@@ -1555,7 +1582,7 @@ message TestArg {
         let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
         let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
         // Empty object should parse successfully
-        let bytes = ProtobufDescriptor::json_to_message(msg_desc.clone(), "{}")?;
+        let bytes = ProtobufDescriptor::json_to_message(msg_desc.clone(), "{}", false)?;
         let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
         // Proto3 default values are omitted in JSON serialization
         assert_eq!(
@@ -1582,7 +1609,8 @@ message TestArg {
         let input = serde_json::json!({"items": []});
         let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
         let msg_desc = descriptor.get_message_by_name("ListMsg").unwrap();
-        let bytes = ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, true)?;
+        let bytes =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, false, true)?;
         let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
         // Empty repeated field should have no elements
         let items = decoded.get_field_by_name("items").unwrap();
