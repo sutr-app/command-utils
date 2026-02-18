@@ -230,7 +230,7 @@ impl ProtobufDescriptor {
         ignore_unknown_fields: bool,
     ) -> Result<Vec<u8>> {
         let normalized = Self::normalize_enum_values(&descriptor, json_value);
-        let target = normalized.as_deref().unwrap_or(json_value);
+        let target = normalized.as_ref().unwrap_or(json_value);
         let dynamic_message = if ignore_unknown_fields {
             let options = DeserializeOptions::new().deny_unknown_fields(false);
             DynamicMessage::deserialize_with_options(descriptor, target, &options)
@@ -242,12 +242,10 @@ impl ProtobufDescriptor {
     pub fn json_to_message(descriptor: MessageDescriptor, json_str: &str) -> Result<Vec<u8>> {
         let json_value: serde_json::Value =
             serde_json::from_str(json_str).context("Failed to parse JSON string")?;
+        // Delegate to json_value_to_message with deny_unknown_fields (default behavior)
         let normalized = Self::normalize_enum_values(&descriptor, &json_value);
-        let target = normalized.as_deref().unwrap_or(&json_value);
-        let serialized = serde_json::to_string(target)?;
-        let mut deserializer = Deserializer::from_str(&serialized);
-        let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-        deserializer.end()?;
+        let target = normalized.as_ref().unwrap_or(&json_value);
+        let dynamic_message = DynamicMessage::deserialize(descriptor, target)?;
         Ok(dynamic_message.encode_to_vec())
     }
 
@@ -256,7 +254,7 @@ impl ProtobufDescriptor {
     fn normalize_enum_values(
         descriptor: &MessageDescriptor,
         json_value: &serde_json::Value,
-    ) -> Option<Box<serde_json::Value>> {
+    ) -> Option<serde_json::Value> {
         let serde_json::Value::Object(map) = json_value else {
             return None;
         };
@@ -281,10 +279,13 @@ impl ProtobufDescriptor {
                 out.insert(key.clone(), value.clone());
             }
         }
-        patched.map(|m| Box::new(serde_json::Value::Object(m)))
+        patched.map(serde_json::Value::Object)
     }
 
     /// Returns Some only when the value was actually changed.
+    ///
+    /// NOTE: `to_uppercase()` handles simple case normalization (e.g. "running" → "RUNNING"),
+    /// but does not add enum name prefixes (e.g. "system" will NOT become "ROLE_SYSTEM").
     fn normalize_field_value(
         field_desc: &prost_reflect::FieldDescriptor,
         value: &serde_json::Value,
@@ -308,12 +309,33 @@ impl ProtobufDescriptor {
                 }),
                 _ => None,
             },
-            Kind::Message(msg_desc) => match value {
-                serde_json::Value::Object(_) => {
-                    Self::normalize_enum_values(&msg_desc, value).map(|b| *b)
+            Kind::Message(msg_desc) if field_desc.is_map() => {
+                // Handle map<K, V> where V might be an enum type
+                let value_field = msg_desc.fields().find(|f| f.number() == 2)?;
+                let serde_json::Value::Object(map) = value else {
+                    return None;
+                };
+                let mut patched: Option<serde_json::Map<String, serde_json::Value>> = None;
+                for (i, (k, v)) in map.iter().enumerate() {
+                    let new_v = Self::normalize_field_value(&value_field, v);
+                    if let Some(nv) = new_v {
+                        let out = patched.get_or_insert_with(|| {
+                            map.iter()
+                                .take(i)
+                                .map(|(k2, v2)| (k2.clone(), v2.clone()))
+                                .collect()
+                        });
+                        out.insert(k.clone(), nv);
+                    } else if let Some(ref mut out) = patched {
+                        out.insert(k.clone(), v.clone());
+                    }
                 }
+                patched.map(serde_json::Value::Object)
+            }
+            Kind::Message(msg_desc) => match value {
+                serde_json::Value::Object(_) => Self::normalize_enum_values(&msg_desc, value),
                 serde_json::Value::Array(arr) => Self::normalize_array_elements(arr, |item| {
-                    Self::normalize_enum_values(&msg_desc, item).map(|b| *b)
+                    Self::normalize_enum_values(&msg_desc, item)
                 }),
                 _ => None,
             },
@@ -1314,6 +1336,44 @@ message TestArg {
         assert!(result.is_none());
         let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &serde_json::Value::Null);
         assert!(result.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_map_with_enum_values() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Priority { UNSET = 0; LOW = 1; MEDIUM = 2; HIGH = 3; }
+        message Config { map<string, Priority> priorities = 1; string name = 2; }
+        "#;
+        let input = serde_json::json!({
+            "priorities": {"task_a": "high", "task_b": "LOW", "task_c": "medium"},
+            "name": "test"
+        });
+        let out = roundtrip_json(proto, "Config", &input)?;
+        let priorities = out["priorities"].as_object().unwrap();
+        assert_eq!(priorities["task_a"], "HIGH");
+        assert_eq!(priorities["task_b"], "LOW");
+        assert_eq!(priorities["task_c"], "MEDIUM");
+        assert_eq!(out["name"], "test");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_map_no_change_when_uppercase() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Status { UNKNOWN = 0; ACTIVE = 1; INACTIVE = 2; }
+        message Registry { map<string, Status> entries = 1; }
+        "#;
+        let input = serde_json::json!({"entries": {"a": "ACTIVE", "b": "INACTIVE"}});
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Registry").unwrap();
+        let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
+        assert!(
+            result.is_none(),
+            "no normalization needed for uppercase enum values in map"
+        );
         Ok(())
     }
 
