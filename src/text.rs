@@ -237,6 +237,39 @@ impl TextUtil {
             })
             .collect()
     }
+
+    /// Convert a camelCase or PascalCase string to UPPER_SNAKE_CASE.
+    ///
+    /// Inserts `_` at case boundaries: lowercase→uppercase and before the last
+    /// letter of a consecutive uppercase run followed by a lowercase letter.
+    ///
+    /// # Examples
+    /// ```
+    /// use command_utils::text::TextUtil;
+    /// assert_eq!(TextUtil::camel_to_upper_snake("runningFast"), "RUNNING_FAST");
+    /// assert_eq!(TextUtil::camel_to_upper_snake("HTTPRequest"), "HTTP_REQUEST");
+    /// assert_eq!(TextUtil::camel_to_upper_snake("simple"), "SIMPLE");
+    /// assert_eq!(TextUtil::camel_to_upper_snake("ALREADY_UPPER"), "ALREADY_UPPER");
+    /// ```
+    pub fn camel_to_upper_snake(s: &str) -> String {
+        let mut result = String::with_capacity(s.len() + 4);
+        let chars: Vec<char> = s.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if c.is_uppercase() && i > 0 {
+                let prev = chars[i - 1];
+                if prev.is_lowercase() || prev.is_ascii_digit() {
+                    result.push('_');
+                } else if prev.is_uppercase()
+                    && let Some(&next) = chars.get(i + 1)
+                    && next.is_lowercase()
+                {
+                    result.push('_');
+                }
+            }
+            result.push(c.to_ascii_uppercase());
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -451,5 +484,35 @@ mod tests {
         assert_eq!(TextUtil::snake_to_camel("snakeToCamel"), "SnakeToCamel");
         assert_eq!(TextUtil::snake_to_camel("snake?"), "Snake?");
         assert_eq!(TextUtil::snake_to_camel("SNAKE_TO_CAMEL"), "SNAKETOCAMEL"); // XXX
+    }
+
+    #[test]
+    fn test_camel_to_upper_snake() {
+        assert_eq!(
+            TextUtil::camel_to_upper_snake("runningFast"),
+            "RUNNING_FAST"
+        );
+        assert_eq!(
+            TextUtil::camel_to_upper_snake("HTTPRequest"),
+            "HTTP_REQUEST"
+        );
+        assert_eq!(TextUtil::camel_to_upper_snake("simple"), "SIMPLE");
+        assert_eq!(TextUtil::camel_to_upper_snake("Simple"), "SIMPLE");
+        assert_eq!(
+            TextUtil::camel_to_upper_snake("ALREADY_UPPER"),
+            "ALREADY_UPPER"
+        );
+        assert_eq!(TextUtil::camel_to_upper_snake("camelCase"), "CAMEL_CASE");
+        assert_eq!(TextUtil::camel_to_upper_snake("PascalCase"), "PASCAL_CASE");
+        assert_eq!(
+            TextUtil::camel_to_upper_snake("getHTTPSUrl"),
+            "GET_HTTPS_URL"
+        );
+        assert_eq!(TextUtil::camel_to_upper_snake("a"), "A");
+        assert_eq!(TextUtil::camel_to_upper_snake(""), "");
+        assert_eq!(
+            TextUtil::camel_to_upper_snake("with2Numbers3"),
+            "WITH2_NUMBERS3"
+        );
     }
 }

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use itertools::Itertools;
 use prost::Message;
 use prost_reflect::{
-    DescriptorPool, DeserializeOptions, DynamicMessage, MessageDescriptor, ReflectMessage,
+    DescriptorPool, DeserializeOptions, DynamicMessage, Kind, MessageDescriptor, ReflectMessage,
     SerializeOptions,
 };
 use serde_json::de::Deserializer;
@@ -64,6 +64,9 @@ pub struct ProtobufDescriptor {
     pool: DescriptorPool,
 }
 
+// Per protobuf spec, map entry message always has key=1 and value=2
+const MAP_VALUE_FIELD_NUMBER: u32 = 2;
+
 impl ProtobufDescriptorLoader for ProtobufDescriptor {}
 impl ProtobufDescriptor {
     pub fn new(proto_string: &String) -> Result<Self> {
@@ -82,24 +85,30 @@ impl ProtobufDescriptor {
     pub fn get_message_by_name(&self, message_name: &str) -> Option<MessageDescriptor> {
         self.pool.get_message_by_name(message_name)
     }
+    /// Deserialize JSON string into a DynamicMessage.
+    ///
+    /// When `normalize_enum` is true, enum string values are normalized to
+    /// UPPER_SNAKE_CASE before deserialization (requires parsing JSON into an
+    /// intermediate `serde_json::Value`, which uses more memory).
+    /// When false, a streaming deserializer is used (memory-efficient for
+    /// large payloads such as base64-encoded binary fields).
     pub fn get_message_from_json(
         descriptor: MessageDescriptor,
         json: &str,
+        normalize_enum: bool,
     ) -> Result<DynamicMessage> {
-        let mut deserializer = Deserializer::from_str(json);
-        let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-        deserializer.end()?;
-        Ok(dynamic_message)
+        Self::deserialize_json_str(descriptor, json, normalize_enum)
     }
     pub fn get_message_by_name_from_json(
         &self,
         message_name: &str,
         json: &str,
+        normalize_enum: bool,
     ) -> Result<DynamicMessage> {
         let message_descriptor = self
             .get_message_by_name(message_name)
             .ok_or(anyhow::anyhow!("message not found by name: {message_name}"))?;
-        Self::get_message_from_json(message_descriptor, json)
+        Self::get_message_from_json(message_descriptor, json, normalize_enum)
     }
     pub fn get_message_from_bytes(
         descriptor: MessageDescriptor,
@@ -119,11 +128,18 @@ impl ProtobufDescriptor {
             .ok_or(anyhow::anyhow!("message not found by name: {message_name}"))?;
         Self::get_message_from_bytes(message_descriptor, bytes)
     }
-    pub fn decode_from_json<T: ReflectMessage + Default>(json: impl AsRef<str>) -> Result<T> {
+    /// Decode JSON string directly into a concrete Protobuf type.
+    ///
+    /// When `normalize_enum` is true, enum string values are normalized to
+    /// UPPER_SNAKE_CASE before deserialization (requires intermediate
+    /// `serde_json::Value` allocation).
+    /// When false, a streaming deserializer is used (memory-efficient).
+    pub fn decode_from_json<T: ReflectMessage + Default>(
+        json: impl AsRef<str>,
+        normalize_enum: bool,
+    ) -> Result<T> {
         let descriptor = T::default().descriptor();
-        let mut deserializer = serde_json::Deserializer::from_str(json.as_ref());
-        let decoded = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-        deserializer.end()?;
+        let decoded = Self::deserialize_json_str(descriptor, json.as_ref(), normalize_enum)?;
         decoded.transcode_to::<T>().context(format!(
             "decode_from_json: on transcoding dynamic message to {}",
             std::any::type_name::<T>()
@@ -224,24 +240,202 @@ impl ProtobufDescriptor {
             prost_reflect::MapKey::String(v) => v.to_string(),
         }
     }
+    /// Convert a JSON Value into protobuf-encoded bytes.
+    ///
+    /// * `normalize_enum` — when true, enum string values are uppercased to
+    ///   match protobuf enum names before deserialization.
+    /// * `ignore_unknown_fields` — when true, unknown JSON keys are silently
+    ///   ignored instead of causing an error.
     pub fn json_value_to_message(
         descriptor: MessageDescriptor,
         json_value: &serde_json::Value,
+        normalize_enum: bool,
         ignore_unknown_fields: bool,
     ) -> Result<Vec<u8>> {
+        let normalized = if normalize_enum {
+            Self::normalize_enum_values(&descriptor, json_value)
+        } else {
+            None
+        };
+        let target = normalized.as_ref().unwrap_or(json_value);
         let dynamic_message = if ignore_unknown_fields {
             let options = DeserializeOptions::new().deny_unknown_fields(false);
-            DynamicMessage::deserialize_with_options(descriptor, json_value, &options)
+            DynamicMessage::deserialize_with_options(descriptor, target, &options)
         } else {
-            DynamicMessage::deserialize(descriptor, json_value)
+            DynamicMessage::deserialize(descriptor, target)
         }?;
         Ok(dynamic_message.encode_to_vec())
     }
-    pub fn json_to_message(descriptor: MessageDescriptor, json_str: &str) -> Result<Vec<u8>> {
-        let mut deserializer = Deserializer::from_str(json_str);
-        let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-        deserializer.end()?;
+    /// Convert JSON string to protobuf-encoded bytes.
+    ///
+    /// When `normalize_enum` is false a streaming deserializer is used, avoiding
+    /// an intermediate `serde_json::Value` allocation (memory-efficient for large
+    /// payloads such as base64-encoded binary fields).
+    /// When true the JSON is first parsed into a Value so that enum string values
+    /// can be uppercased to match protobuf enum names.
+    ///
+    /// Unknown fields are always rejected (deny_unknown_fields=true).
+    /// If you need to ignore unknown fields, parse into `serde_json::Value`
+    /// yourself and call `json_value_to_message` with `ignore_unknown_fields=true`.
+    pub fn json_to_message(
+        descriptor: MessageDescriptor,
+        json_str: &str,
+        normalize_enum: bool,
+    ) -> Result<Vec<u8>> {
+        let dynamic_message = Self::deserialize_json_str(descriptor, json_str, normalize_enum)?;
         Ok(dynamic_message.encode_to_vec())
+    }
+
+    /// Deserialize a JSON string into a DynamicMessage, optionally normalizing
+    /// enum values.  When `normalize_enum` is true the JSON is fully parsed into
+    /// `serde_json::Value` first (higher memory usage).  When false a streaming
+    /// deserializer is used (memory-efficient for large payloads).
+    fn deserialize_json_str(
+        descriptor: MessageDescriptor,
+        json: &str,
+        normalize_enum: bool,
+    ) -> Result<DynamicMessage> {
+        if normalize_enum {
+            let json_value: serde_json::Value =
+                serde_json::from_str(json).context("Failed to parse JSON string")?;
+            let normalized = Self::normalize_enum_values(&descriptor, &json_value);
+            let target = normalized.as_ref().unwrap_or(&json_value);
+            Ok(DynamicMessage::deserialize(descriptor, target)?)
+        } else {
+            let mut deserializer = Deserializer::from_str(json);
+            let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
+            deserializer.end()?;
+            Ok(dynamic_message)
+        }
+    }
+
+    /// Normalize enum string values in JSON to match protobuf enum names (UPPER_SNAKE_CASE).
+    /// Returns None if no normalization was needed (zero-copy path).
+    fn normalize_enum_values(
+        descriptor: &MessageDescriptor,
+        json_value: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let serde_json::Value::Object(map) = json_value else {
+            return None;
+        };
+        Self::normalize_map_entries(map, |key, value| {
+            let field = descriptor
+                .get_field_by_json_name(key)
+                .or_else(|| descriptor.get_field_by_name(key));
+            field
+                .as_ref()
+                .and_then(|fd| Self::normalize_field_value(fd, value))
+        })
+    }
+
+    /// Returns Some only when the value was actually changed.
+    ///
+    /// Normalization strategy (tried in order, first match wins):
+    /// 1. Exact match — no change needed.
+    /// 2. Simple uppercase — e.g. "running" → "RUNNING".
+    /// 3. camelCase to UPPER_SNAKE_CASE — e.g. "runningFast" → "RUNNING_FAST".
+    ///
+    /// NOTE: This does not add enum name prefixes (e.g. "system" will NOT become
+    /// "ROLE_SYSTEM").  If prefix-based matching is needed in the future, extend
+    /// the `Kind::Enum` arm to iterate `enum_desc.values()` and try stripping a
+    /// common prefix before comparison.
+    fn normalize_field_value(
+        field_desc: &prost_reflect::FieldDescriptor,
+        value: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        match field_desc.kind() {
+            Kind::Enum(enum_desc) => match value {
+                serde_json::Value::String(s) => {
+                    if enum_desc.get_value_by_name(s).is_some() {
+                        None
+                    } else {
+                        let upper = s.to_uppercase();
+                        if enum_desc.get_value_by_name(&upper).is_some() {
+                            Some(serde_json::Value::String(upper))
+                        } else {
+                            let upper_snake = crate::text::TextUtil::camel_to_upper_snake(s);
+                            if upper_snake != upper
+                                && enum_desc.get_value_by_name(&upper_snake).is_some()
+                            {
+                                Some(serde_json::Value::String(upper_snake))
+                            } else {
+                                None
+                            }
+                        }
+                    }
+                }
+                serde_json::Value::Array(arr) => Self::normalize_array_elements(arr, |item| {
+                    Self::normalize_field_value(field_desc, item)
+                }),
+                _ => None,
+            },
+            Kind::Message(msg_desc) if field_desc.is_map() => {
+                // Handle map<K, V> where V might be an enum type
+                let value_field = msg_desc
+                    .fields()
+                    .find(|f| f.number() == MAP_VALUE_FIELD_NUMBER)?;
+                let serde_json::Value::Object(map) = value else {
+                    return None;
+                };
+                Self::normalize_map_entries(map, |_key, v| {
+                    Self::normalize_field_value(&value_field, v)
+                })
+            }
+            Kind::Message(msg_desc) => match value {
+                serde_json::Value::Object(_) => Self::normalize_enum_values(&msg_desc, value),
+                serde_json::Value::Array(arr) => Self::normalize_array_elements(arr, |item| {
+                    Self::normalize_enum_values(&msg_desc, item)
+                }),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Apply a transform to map entries, lazily cloning only when at least one value changes.
+    /// Returns None if no entry was modified (zero-copy path).
+    ///
+    /// The lazy-copy uses an index to copy preceding entries on first mutation.
+    /// This works correctly regardless of iteration order (BTreeMap default or
+    /// IndexMap with serde_json's `preserve_order` feature).
+    fn normalize_map_entries(
+        map: &serde_json::Map<String, serde_json::Value>,
+        mut transform: impl FnMut(&str, &serde_json::Value) -> Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let mut patched: Option<serde_json::Map<String, serde_json::Value>> = None;
+        for (i, (key, value)) in map.iter().enumerate() {
+            let new_value = transform(key, value);
+            if let Some(nv) = new_value {
+                let out = patched.get_or_insert_with(|| {
+                    map.iter()
+                        .take(i)
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                });
+                out.insert(key.clone(), nv);
+            } else if let Some(ref mut out) = patched {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+        patched.map(serde_json::Value::Object)
+    }
+
+    /// Apply a normalization function to array elements, cloning only when at least one changes.
+    fn normalize_array_elements(
+        arr: &[serde_json::Value],
+        mut normalize_fn: impl FnMut(&serde_json::Value) -> Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let mut patched: Option<Vec<serde_json::Value>> = None;
+        for (i, item) in arr.iter().enumerate() {
+            let new_item = normalize_fn(item);
+            if let Some(ni) = new_item {
+                let out = patched.get_or_insert_with(|| arr.iter().take(i).cloned().collect());
+                out.push(ni);
+            } else if let Some(ref mut out) = patched {
+                out.push(item.clone());
+            }
+        }
+        patched.map(serde_json::Value::Array)
     }
 
     /// Convert Protobuf MessageDescriptor to JSON Schema
@@ -319,7 +513,10 @@ impl ProtobufDescriptor {
             // For map<K, V>, we need to get the value type from the map entry message
             if let prost_reflect::Kind::Message(map_entry) = field.kind() {
                 // Map entry has two fields: key (field 1) and value (field 2)
-                if let Some(value_field) = map_entry.fields().find(|f| f.number() == 2) {
+                if let Some(value_field) = map_entry
+                    .fields()
+                    .find(|f| f.number() == MAP_VALUE_FIELD_NUMBER)
+                {
                     return serde_json::json!({
                         "type": "object",
                         "additionalProperties": Self::kind_to_json_schema(&value_field.kind())
@@ -489,7 +686,8 @@ message TestArg {
             "tags": ["tag1", "tag2"]
         }
         "#;
-        let message = descriptor.get_message_by_name_from_json("jobworkerp.data.Job", json)?;
+        let message =
+            descriptor.get_message_by_name_from_json("jobworkerp.data.Job", json, true)?;
 
         assert_eq!(message.descriptor().name(), "Job");
         assert_eq!(
@@ -926,6 +1124,392 @@ message TestArg {
         Ok(())
     }
 
+    // --- Tests for normalize_enum_values ---
+
+    /// Helper: build descriptor and round-trip JSON through json_value_to_message,
+    /// then decode back to DynamicMessage and return the JSON representation.
+    fn roundtrip_json(
+        proto_string: &str,
+        message_name: &str,
+        json_value: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_desc = descriptor.get_message_by_name(message_name).unwrap();
+        let bytes =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), json_value, true, true)?;
+        let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
+        ProtobufDescriptor::message_to_json_value(&decoded)
+    }
+
+    #[test]
+    fn test_normalize_enum_no_change_when_uppercase() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
+        message Msg { Role role = 1; string text = 2; }
+        "#;
+        let input = serde_json::json!({"role": "SYSTEM", "text": "hello"});
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
+
+        // normalize_enum_values should return None (no changes needed)
+        let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
+        assert!(
+            result.is_none(),
+            "should not allocate when already uppercase"
+        );
+
+        let out = roundtrip_json(proto, "Msg", &input)?;
+        assert_eq!(out["role"], "SYSTEM");
+        assert_eq!(out["text"], "hello");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_lowercase_to_uppercase() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
+        message Msg { Role role = 1; string text = 2; }
+        "#;
+        let input = serde_json::json!({"role": "system", "text": "hello"});
+        let out = roundtrip_json(proto, "Msg", &input)?;
+        assert_eq!(out["role"], "SYSTEM");
+        assert_eq!(out["text"], "hello");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_mixed_case() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Status { UNKNOWN = 0; PENDING = 1; RUNNING = 2; }
+        message Task { Status status = 1; }
+        "#;
+        let input = serde_json::json!({"status": "pending"});
+        let out = roundtrip_json(proto, "Task", &input)?;
+        assert_eq!(out["status"], "PENDING");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_camel_case_to_upper_snake() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum TaskStatus { UNKNOWN = 0; RUNNING_FAST = 1; PENDING_REVIEW = 2; HTTP_REQUEST = 3; }
+        message Task { TaskStatus status = 1; }
+        "#;
+        // camelCase → UPPER_SNAKE_CASE
+        let input = serde_json::json!({"status": "runningFast"});
+        let out = roundtrip_json(proto, "Task", &input)?;
+        assert_eq!(out["status"], "RUNNING_FAST");
+
+        // PascalCase → UPPER_SNAKE_CASE
+        let input = serde_json::json!({"status": "PendingReview"});
+        let out = roundtrip_json(proto, "Task", &input)?;
+        assert_eq!(out["status"], "PENDING_REVIEW");
+
+        // Consecutive uppercase acronym
+        let input = serde_json::json!({"status": "HTTPRequest"});
+        let out = roundtrip_json(proto, "Task", &input)?;
+        assert_eq!(out["status"], "HTTP_REQUEST");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_unrecognized_value_passes_through() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Color { NONE = 0; RED = 1; BLUE = 2; }
+        message Item { Color color = 1; }
+        "#;
+        let input = serde_json::json!({"color": "green"});
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Item").unwrap();
+        let normalized = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
+        // "green" cannot be uppercased to a valid value either, so no change
+        assert!(normalized.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_non_enum_fields_not_cloned() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        message Msg { string data = 1; bytes payload = 2; int64 count = 3; }
+        "#;
+        let input = serde_json::json!({"data": "large_string", "count": 42});
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
+        let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
+        assert!(result.is_none(), "no enum fields means no allocation");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_nested_message_with_enum() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; ASSISTANT = 3; }
+        message Content { string text = 1; }
+        message ChatMessage { Role role = 1; Content content = 2; }
+        message ChatArgs { repeated ChatMessage messages = 1; string model = 2; }
+        "#;
+        let input = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": {"text": "You are helpful."}},
+                {"role": "user", "content": {"text": "Hello"}}
+            ],
+            "model": "gpt-4"
+        });
+        let out = roundtrip_json(proto, "ChatArgs", &input)?;
+        let messages = out["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "SYSTEM");
+        assert_eq!(messages[0]["content"]["text"], "You are helpful.");
+        assert_eq!(messages[1]["role"], "USER");
+        assert_eq!(messages[1]["content"]["text"], "Hello");
+        assert_eq!(out["model"], "gpt-4");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_deeply_nested_three_levels() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Priority { UNSET = 0; LOW = 1; MEDIUM = 2; HIGH = 3; CRITICAL = 4; }
+        enum Status { UNKNOWN = 0; ACTIVE = 1; INACTIVE = 2; }
+        message Tag { string key = 1; Priority priority = 2; }
+        message Metadata { repeated Tag tags = 1; Status status = 2; }
+        message Item { string name = 1; Metadata metadata = 2; }
+        message Container { repeated Item items = 1; string title = 2; }
+        "#;
+        let input = serde_json::json!({
+            "items": [
+                {
+                    "name": "item1",
+                    "metadata": {
+                        "tags": [
+                            {"key": "env", "priority": "high"},
+                            {"key": "region", "priority": "LOW"}
+                        ],
+                        "status": "active"
+                    }
+                },
+                {
+                    "name": "item2",
+                    "metadata": {
+                        "tags": [
+                            {"key": "team", "priority": "critical"}
+                        ],
+                        "status": "inactive"
+                    }
+                }
+            ],
+            "title": "my container"
+        });
+        let out = roundtrip_json(proto, "Container", &input)?;
+        let items = out["items"].as_array().unwrap();
+
+        // item1
+        let tags0 = items[0]["metadata"]["tags"].as_array().unwrap();
+        assert_eq!(tags0[0]["priority"], "HIGH");
+        assert_eq!(tags0[1]["priority"], "LOW"); // already uppercase, preserved
+        assert_eq!(items[0]["metadata"]["status"], "ACTIVE");
+
+        // item2
+        let tags1 = items[1]["metadata"]["tags"].as_array().unwrap();
+        assert_eq!(tags1[0]["priority"], "CRITICAL");
+        assert_eq!(items[1]["metadata"]["status"], "INACTIVE");
+
+        assert_eq!(out["title"], "my container");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_repeated_enum_field() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Permission { NONE = 0; READ = 1; WRITE = 2; ADMIN = 3; }
+        message User { string name = 1; repeated Permission permissions = 2; }
+        "#;
+        let input = serde_json::json!({
+            "name": "alice",
+            "permissions": ["read", "WRITE", "admin"]
+        });
+        let out = roundtrip_json(proto, "User", &input)?;
+        let perms = out["permissions"].as_array().unwrap();
+        assert_eq!(perms[0], "READ");
+        assert_eq!(perms[1], "WRITE");
+        assert_eq!(perms[2], "ADMIN");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_partial_mutation_lazy_copy() -> Result<()> {
+        // Only the second field needs normalization; first field should be lazily copied
+        let proto = r#"
+        syntax = "proto3";
+        enum Mode { OFF = 0; ON = 1; AUTO = 2; }
+        message Config { string name = 1; bytes data = 2; Mode mode = 3; int32 count = 4; }
+        "#;
+        let input = serde_json::json!({
+            "name": "test",
+            "data": "AQID",
+            "mode": "auto",
+            "count": 100
+        });
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Config").unwrap();
+        let normalized = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
+        // Should have allocated because "auto" → "AUTO"
+        assert!(normalized.is_some());
+        let nv = normalized.unwrap();
+        assert_eq!(nv["mode"], "AUTO");
+        assert_eq!(nv["name"], "test");
+        assert_eq!(nv["count"], 100);
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_json_value_to_message_lowercase() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
+        message Msg { Role role = 1; string text = 2; }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
+        // json_to_message is a streaming path without normalization;
+        // use json_value_to_message for case-insensitive enum handling.
+        let json_value = serde_json::json!({"role": "user", "text": "hi"});
+        let bytes =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &json_value, true, false)?;
+        let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
+        let out = ProtobufDescriptor::message_to_json_value(&decoded)?;
+        assert_eq!(out["role"], "USER");
+        assert_eq!(out["text"], "hi");
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_to_message_no_enum_normalization() -> Result<()> {
+        // json_to_message uses streaming deserializer and does NOT normalize enums.
+        // Lowercase enum values should fail.
+        let proto = r#"
+        syntax = "proto3";
+        enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
+        message Msg { Role role = 1; string text = 2; }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
+        let result = ProtobufDescriptor::json_to_message(
+            msg_desc,
+            r#"{"role": "user", "text": "hi"}"#,
+            false,
+        );
+        assert!(
+            result.is_err(),
+            "streaming json_to_message should not normalize lowercase enums"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_numeric_value_unchanged() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
+        message Msg { Role role = 1; }
+        "#;
+        // Numeric enum values should work without normalization
+        let input = serde_json::json!({"role": 2});
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
+        let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
+        assert!(
+            result.is_none(),
+            "numeric enum values need no normalization"
+        );
+
+        let out = roundtrip_json(proto, "Msg", &input)?;
+        assert_eq!(out["role"], "USER");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_camel_case_field_name() -> Result<()> {
+        // Proto field is snake_case but JSON uses camelCase
+        let proto = r#"
+        syntax = "proto3";
+        enum ChatRole { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
+        message Msg { ChatRole chat_role = 1; string display_name = 2; }
+        "#;
+        let input = serde_json::json!({"chatRole": "system", "displayName": "bot"});
+        let out = roundtrip_json(proto, "Msg", &input)?;
+        assert_eq!(out["chatRole"], "SYSTEM");
+        assert_eq!(out["displayName"], "bot");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_non_object_input() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Role { UNSPECIFIED = 0; SYSTEM = 1; }
+        message Msg { Role role = 1; }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
+        // Non-object input returns None
+        let result =
+            ProtobufDescriptor::normalize_enum_values(&msg_desc, &serde_json::json!("string"));
+        assert!(result.is_none());
+        let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &serde_json::json!(123));
+        assert!(result.is_none());
+        let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &serde_json::Value::Null);
+        assert!(result.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_map_with_enum_values() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Priority { UNSET = 0; LOW = 1; MEDIUM = 2; HIGH = 3; }
+        message Config { map<string, Priority> priorities = 1; string name = 2; }
+        "#;
+        let input = serde_json::json!({
+            "priorities": {"task_a": "high", "task_b": "LOW", "task_c": "medium"},
+            "name": "test"
+        });
+        let out = roundtrip_json(proto, "Config", &input)?;
+        let priorities = out["priorities"].as_object().unwrap();
+        assert_eq!(priorities["task_a"], "HIGH");
+        assert_eq!(priorities["task_b"], "LOW");
+        assert_eq!(priorities["task_c"], "MEDIUM");
+        assert_eq!(out["name"], "test");
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_map_no_change_when_uppercase() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Status { UNKNOWN = 0; ACTIVE = 1; INACTIVE = 2; }
+        message Registry { map<string, Status> entries = 1; }
+        "#;
+        let input = serde_json::json!({"entries": {"a": "ACTIVE", "b": "INACTIVE"}});
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Registry").unwrap();
+        let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
+        assert!(
+            result.is_none(),
+            "no normalization needed for uppercase enum values in map"
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_message_descriptor_to_json_schema_with_oneof() -> Result<()> {
         // Test case for oneof fields (similar to PythonCommandArgs)
@@ -968,6 +1552,108 @@ message TestArg {
         assert!(props.contains_key("scriptContent") || props.contains_key("scriptUrl"));
         assert!(props.contains_key("dataBody") || props.contains_key("dataUrl"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_enum_map_with_message_containing_enum() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        enum Priority { UNSET = 0; LOW = 1; MEDIUM = 2; HIGH = 3; }
+        message TaskInfo { string description = 1; Priority priority = 2; }
+        message Project { map<string, TaskInfo> tasks = 1; }
+        "#;
+        let input = serde_json::json!({
+            "tasks": {
+                "task_a": {"description": "Do something", "priority": "high"},
+                "task_b": {"description": "Do other", "priority": "LOW"}
+            }
+        });
+        let out = roundtrip_json(proto, "Project", &input)?;
+        let tasks = out["tasks"].as_object().unwrap();
+        assert_eq!(tasks["task_a"]["priority"], "HIGH");
+        assert_eq!(tasks["task_a"]["description"], "Do something");
+        assert_eq!(tasks["task_b"]["priority"], "LOW");
+        assert_eq!(tasks["task_b"]["description"], "Do other");
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_to_message_unknown_field_rejected() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        message Simple { string name = 1; }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
+        // json_to_message delegates with ignore_unknown_fields=false, so unknown fields cause error
+        let json_str = r#"{"name": "test", "nonExistent": "value"}"#;
+        let result = ProtobufDescriptor::json_to_message(msg_desc, json_str, false);
+        assert!(result.is_err(), "unknown fields should be rejected");
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_value_to_message_unknown_field_ignored() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        message Simple { string name = 1; }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
+        let input = serde_json::json!({"name": "test", "nonExistent": "value"});
+        // With ignore_unknown_fields=true, unknown fields are silently ignored
+        let result =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, true, true);
+        assert!(result.is_ok());
+        let decoded = DynamicMessage::decode(msg_desc, Cursor::new(result?))?;
+        let out = ProtobufDescriptor::message_to_json_value(&decoded)?;
+        assert_eq!(out["name"], "test");
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_to_message_empty_object() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        message Simple { string name = 1; int32 count = 2; }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
+        // Empty object should parse successfully
+        let bytes = ProtobufDescriptor::json_to_message(msg_desc.clone(), "{}", false)?;
+        let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
+        // Proto3 default values are omitted in JSON serialization
+        assert_eq!(
+            decoded.get_field_by_name("name").unwrap().as_str().unwrap(),
+            ""
+        );
+        assert_eq!(
+            decoded
+                .get_field_by_name("count")
+                .unwrap()
+                .as_i32()
+                .unwrap(),
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_value_to_message_empty_array_in_repeated() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        message ListMsg { repeated string items = 1; }
+        "#;
+        let input = serde_json::json!({"items": []});
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("ListMsg").unwrap();
+        let bytes =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, false, true)?;
+        let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
+        // Empty repeated field should have no elements
+        let items = decoded.get_field_by_name("items").unwrap();
+        assert_eq!(items.as_list().unwrap().len(), 0);
         Ok(())
     }
 }
