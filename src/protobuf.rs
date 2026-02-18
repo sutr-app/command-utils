@@ -85,16 +85,29 @@ impl ProtobufDescriptor {
     pub fn get_message_by_name(&self, message_name: &str) -> Option<MessageDescriptor> {
         self.pool.get_message_by_name(message_name)
     }
-    /// Deserialize JSON string into a DynamicMessage without enum normalization.
-    /// Use `json_to_message` or `json_value_to_message` if case-insensitive enum handling is needed.
+    /// Deserialize JSON string into a DynamicMessage.
+    ///
+    /// When `normalize` is true, enum string values are normalized to UPPER_SNAKE_CASE
+    /// before deserialization (case-insensitive enum handling).
+    /// When false, the JSON is deserialized as-is via streaming deserializer.
     pub fn get_message_from_json(
         descriptor: MessageDescriptor,
         json: &str,
+        normalize: bool,
     ) -> Result<DynamicMessage> {
-        let mut deserializer = Deserializer::from_str(json);
-        let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-        deserializer.end()?;
-        Ok(dynamic_message)
+        if normalize {
+            let json_value: serde_json::Value =
+                serde_json::from_str(json).context("Failed to parse JSON string")?;
+            let normalized = Self::normalize_enum_values(&descriptor, &json_value);
+            let target = normalized.as_ref().unwrap_or(&json_value);
+            let dynamic_message = DynamicMessage::deserialize(descriptor, target)?;
+            Ok(dynamic_message)
+        } else {
+            let mut deserializer = Deserializer::from_str(json);
+            let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
+            deserializer.end()?;
+            Ok(dynamic_message)
+        }
     }
     pub fn get_message_by_name_from_json(
         &self,
@@ -104,7 +117,7 @@ impl ProtobufDescriptor {
         let message_descriptor = self
             .get_message_by_name(message_name)
             .ok_or(anyhow::anyhow!("message not found by name: {message_name}"))?;
-        Self::get_message_from_json(message_descriptor, json)
+        Self::get_message_from_json(message_descriptor, json, true)
     }
     pub fn get_message_from_bytes(
         descriptor: MessageDescriptor,
@@ -124,13 +137,28 @@ impl ProtobufDescriptor {
             .ok_or(anyhow::anyhow!("message not found by name: {message_name}"))?;
         Self::get_message_from_bytes(message_descriptor, bytes)
     }
-    /// Decode JSON string directly into a concrete Protobuf type without enum normalization.
-    /// Use `json_to_message` or `json_value_to_message` if case-insensitive enum handling is needed.
-    pub fn decode_from_json<T: ReflectMessage + Default>(json: impl AsRef<str>) -> Result<T> {
+    /// Decode JSON string directly into a concrete Protobuf type.
+    ///
+    /// When `normalize` is true, enum string values are normalized to UPPER_SNAKE_CASE
+    /// before deserialization (case-insensitive enum handling).
+    /// When false, the JSON is deserialized as-is via streaming deserializer.
+    pub fn decode_from_json<T: ReflectMessage + Default>(
+        json: impl AsRef<str>,
+        normalize: bool,
+    ) -> Result<T> {
         let descriptor = T::default().descriptor();
-        let mut deserializer = serde_json::Deserializer::from_str(json.as_ref());
-        let decoded = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-        deserializer.end()?;
+        let decoded = if normalize {
+            let json_value: serde_json::Value =
+                serde_json::from_str(json.as_ref()).context("Failed to parse JSON string")?;
+            let normalized = Self::normalize_enum_values(&descriptor, &json_value);
+            let target = normalized.as_ref().unwrap_or(&json_value);
+            DynamicMessage::deserialize(descriptor, target)?
+        } else {
+            let mut deserializer = serde_json::Deserializer::from_str(json.as_ref());
+            let decoded = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
+            deserializer.end()?;
+            decoded
+        };
         decoded.transcode_to::<T>().context(format!(
             "decode_from_json: on transcoding dynamic message to {}",
             std::any::type_name::<T>()
@@ -261,34 +289,22 @@ impl ProtobufDescriptor {
         let serde_json::Value::Object(map) = json_value else {
             return None;
         };
-        let mut patched: Option<serde_json::Map<String, serde_json::Value>> = None;
-        for (i, (key, value)) in map.iter().enumerate() {
+        Self::normalize_map_entries(map, |key, value| {
             let field = descriptor
                 .get_field_by_json_name(key)
                 .or_else(|| descriptor.get_field_by_name(key));
-            let new_value = field
+            field
                 .as_ref()
-                .and_then(|fd| Self::normalize_field_value(fd, value));
-            if let Some(nv) = new_value {
-                // Lazily materialize the map on first mutation
-                let out = patched.get_or_insert_with(|| {
-                    map.iter()
-                        .take(i)
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                });
-                out.insert(key.clone(), nv);
-            } else if let Some(ref mut out) = patched {
-                out.insert(key.clone(), value.clone());
-            }
-        }
-        patched.map(serde_json::Value::Object)
+                .and_then(|fd| Self::normalize_field_value(fd, value))
+        })
     }
 
     /// Returns Some only when the value was actually changed.
     ///
     /// NOTE: `to_uppercase()` handles simple case normalization (e.g. "running" → "RUNNING"),
     /// but does not add enum name prefixes (e.g. "system" will NOT become "ROLE_SYSTEM").
+    /// If prefix-based enum matching is needed in the future, extend the `Kind::Enum` arm
+    /// to iterate `enum_desc.values()` and try stripping a common prefix before comparison.
     fn normalize_field_value(
         field_desc: &prost_reflect::FieldDescriptor,
         value: &serde_json::Value,
@@ -320,22 +336,9 @@ impl ProtobufDescriptor {
                 let serde_json::Value::Object(map) = value else {
                     return None;
                 };
-                let mut patched: Option<serde_json::Map<String, serde_json::Value>> = None;
-                for (i, (k, v)) in map.iter().enumerate() {
-                    let new_v = Self::normalize_field_value(&value_field, v);
-                    if let Some(nv) = new_v {
-                        let out = patched.get_or_insert_with(|| {
-                            map.iter()
-                                .take(i)
-                                .map(|(k2, v2)| (k2.clone(), v2.clone()))
-                                .collect()
-                        });
-                        out.insert(k.clone(), nv);
-                    } else if let Some(ref mut out) = patched {
-                        out.insert(k.clone(), v.clone());
-                    }
-                }
-                patched.map(serde_json::Value::Object)
+                Self::normalize_map_entries(map, |_key, v| {
+                    Self::normalize_field_value(&value_field, v)
+                })
             }
             Kind::Message(msg_desc) => match value {
                 serde_json::Value::Object(_) => Self::normalize_enum_values(&msg_desc, value),
@@ -346,6 +349,30 @@ impl ProtobufDescriptor {
             },
             _ => None,
         }
+    }
+
+    /// Apply a transform to map entries, lazily cloning only when at least one value changes.
+    /// Returns None if no entry was modified (zero-copy path).
+    fn normalize_map_entries(
+        map: &serde_json::Map<String, serde_json::Value>,
+        mut transform: impl FnMut(&str, &serde_json::Value) -> Option<serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let mut patched: Option<serde_json::Map<String, serde_json::Value>> = None;
+        for (i, (key, value)) in map.iter().enumerate() {
+            let new_value = transform(key, value);
+            if let Some(nv) = new_value {
+                let out = patched.get_or_insert_with(|| {
+                    map.iter()
+                        .take(i)
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                });
+                out.insert(key.clone(), nv);
+            } else if let Some(ref mut out) = patched {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+        patched.map(serde_json::Value::Object)
     }
 
     /// Apply a normalization function to array elements, cloning only when at least one changes.
