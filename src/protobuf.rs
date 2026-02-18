@@ -274,10 +274,20 @@ impl ProtobufDescriptor {
         }?;
         Ok(dynamic_message.encode_to_vec())
     }
+    /// Convert JSON string to protobuf-encoded bytes using a streaming deserializer.
+    ///
+    /// This does NOT apply enum normalization.  If case-insensitive enum handling
+    /// is needed, parse the JSON into a `serde_json::Value` first and use
+    /// `json_value_to_message` instead.
+    ///
+    /// Streaming avoids building a full `serde_json::Value` tree, keeping memory
+    /// usage proportional to the protobuf message size rather than the JSON size
+    /// (important when the JSON contains large base64-encoded binary fields).
     pub fn json_to_message(descriptor: MessageDescriptor, json_str: &str) -> Result<Vec<u8>> {
-        let json_value: serde_json::Value =
-            serde_json::from_str(json_str).context("Failed to parse JSON string")?;
-        Self::json_value_to_message(descriptor, &json_value, false)
+        let mut deserializer = Deserializer::from_str(json_str);
+        let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
+        deserializer.end()?;
+        Ok(dynamic_message.encode_to_vec())
     }
 
     /// Normalize enum string values in JSON to match protobuf enum names (UPPER_SNAKE_CASE).
@@ -1300,7 +1310,7 @@ message TestArg {
     }
 
     #[test]
-    fn test_normalize_enum_json_to_message_lowercase() -> Result<()> {
+    fn test_normalize_enum_json_value_to_message_lowercase() -> Result<()> {
         let proto = r#"
         syntax = "proto3";
         enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
@@ -1308,12 +1318,35 @@ message TestArg {
         "#;
         let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
         let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
-        let json_str = r#"{"role": "user", "text": "hi"}"#;
-        let bytes = ProtobufDescriptor::json_to_message(msg_desc.clone(), json_str)?;
+        // json_to_message is a streaming path without normalization;
+        // use json_value_to_message for case-insensitive enum handling.
+        let json_value = serde_json::json!({"role": "user", "text": "hi"});
+        let bytes =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &json_value, false)?;
         let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
         let out = ProtobufDescriptor::message_to_json_value(&decoded)?;
         assert_eq!(out["role"], "USER");
         assert_eq!(out["text"], "hi");
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_to_message_no_enum_normalization() -> Result<()> {
+        // json_to_message uses streaming deserializer and does NOT normalize enums.
+        // Lowercase enum values should fail.
+        let proto = r#"
+        syntax = "proto3";
+        enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
+        message Msg { Role role = 1; string text = 2; }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
+        let result =
+            ProtobufDescriptor::json_to_message(msg_desc, r#"{"role": "user", "text": "hi"}"#);
+        assert!(
+            result.is_err(),
+            "streaming json_to_message should not normalize lowercase enums"
+        );
         Ok(())
     }
 
