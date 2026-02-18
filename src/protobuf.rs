@@ -97,29 +97,18 @@ impl ProtobufDescriptor {
         json: &str,
         normalize_enum: bool,
     ) -> Result<DynamicMessage> {
-        if normalize_enum {
-            let json_value: serde_json::Value =
-                serde_json::from_str(json).context("Failed to parse JSON string")?;
-            let normalized = Self::normalize_enum_values(&descriptor, &json_value);
-            let target = normalized.as_ref().unwrap_or(&json_value);
-            let dynamic_message = DynamicMessage::deserialize(descriptor, target)?;
-            Ok(dynamic_message)
-        } else {
-            let mut deserializer = Deserializer::from_str(json);
-            let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-            deserializer.end()?;
-            Ok(dynamic_message)
-        }
+        Self::deserialize_json_str(descriptor, json, normalize_enum)
     }
     pub fn get_message_by_name_from_json(
         &self,
         message_name: &str,
         json: &str,
+        normalize_enum: bool,
     ) -> Result<DynamicMessage> {
         let message_descriptor = self
             .get_message_by_name(message_name)
             .ok_or(anyhow::anyhow!("message not found by name: {message_name}"))?;
-        Self::get_message_from_json(message_descriptor, json, true)
+        Self::get_message_from_json(message_descriptor, json, normalize_enum)
     }
     pub fn get_message_from_bytes(
         descriptor: MessageDescriptor,
@@ -150,18 +139,7 @@ impl ProtobufDescriptor {
         normalize_enum: bool,
     ) -> Result<T> {
         let descriptor = T::default().descriptor();
-        let decoded = if normalize_enum {
-            let json_value: serde_json::Value =
-                serde_json::from_str(json.as_ref()).context("Failed to parse JSON string")?;
-            let normalized = Self::normalize_enum_values(&descriptor, &json_value);
-            let target = normalized.as_ref().unwrap_or(&json_value);
-            DynamicMessage::deserialize(descriptor, target)?
-        } else {
-            let mut deserializer = serde_json::Deserializer::from_str(json.as_ref());
-            let decoded = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
-            deserializer.end()?;
-            decoded
-        };
+        let decoded = Self::deserialize_json_str(descriptor, json.as_ref(), normalize_enum)?;
         decoded.transcode_to::<T>().context(format!(
             "decode_from_json: on transcoding dynamic message to {}",
             std::any::type_name::<T>()
@@ -295,20 +273,39 @@ impl ProtobufDescriptor {
     /// payloads such as base64-encoded binary fields).
     /// When true the JSON is first parsed into a Value so that enum string values
     /// can be uppercased to match protobuf enum names.
+    ///
+    /// Unknown fields are always rejected (deny_unknown_fields=true).
+    /// If you need to ignore unknown fields, parse into `serde_json::Value`
+    /// yourself and call `json_value_to_message` with `ignore_unknown_fields=true`.
     pub fn json_to_message(
         descriptor: MessageDescriptor,
         json_str: &str,
         normalize_enum: bool,
     ) -> Result<Vec<u8>> {
+        let dynamic_message = Self::deserialize_json_str(descriptor, json_str, normalize_enum)?;
+        Ok(dynamic_message.encode_to_vec())
+    }
+
+    /// Deserialize a JSON string into a DynamicMessage, optionally normalizing
+    /// enum values.  When `normalize_enum` is true the JSON is fully parsed into
+    /// `serde_json::Value` first (higher memory usage).  When false a streaming
+    /// deserializer is used (memory-efficient for large payloads).
+    fn deserialize_json_str(
+        descriptor: MessageDescriptor,
+        json: &str,
+        normalize_enum: bool,
+    ) -> Result<DynamicMessage> {
         if normalize_enum {
             let json_value: serde_json::Value =
-                serde_json::from_str(json_str).context("Failed to parse JSON string")?;
-            Self::json_value_to_message(descriptor, &json_value, true, false)
+                serde_json::from_str(json).context("Failed to parse JSON string")?;
+            let normalized = Self::normalize_enum_values(&descriptor, &json_value);
+            let target = normalized.as_ref().unwrap_or(&json_value);
+            Ok(DynamicMessage::deserialize(descriptor, target)?)
         } else {
-            let mut deserializer = Deserializer::from_str(json_str);
+            let mut deserializer = Deserializer::from_str(json);
             let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
             deserializer.end()?;
-            Ok(dynamic_message.encode_to_vec())
+            Ok(dynamic_message)
         }
     }
 
@@ -385,6 +382,10 @@ impl ProtobufDescriptor {
 
     /// Apply a transform to map entries, lazily cloning only when at least one value changes.
     /// Returns None if no entry was modified (zero-copy path).
+    ///
+    /// The lazy-copy uses an index to copy preceding entries on first mutation.
+    /// This works correctly regardless of iteration order (BTreeMap default or
+    /// IndexMap with serde_json's `preserve_order` feature).
     fn normalize_map_entries(
         map: &serde_json::Map<String, serde_json::Value>,
         mut transform: impl FnMut(&str, &serde_json::Value) -> Option<serde_json::Value>,
@@ -673,7 +674,8 @@ message TestArg {
             "tags": ["tag1", "tag2"]
         }
         "#;
-        let message = descriptor.get_message_by_name_from_json("jobworkerp.data.Job", json)?;
+        let message =
+            descriptor.get_message_by_name_from_json("jobworkerp.data.Job", json, true)?;
 
         assert_eq!(message.descriptor().name(), "Job");
         assert_eq!(
