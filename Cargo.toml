@@ -65,8 +65,8 @@ tracing-subscriber = { version = "0.3", features = [
 [features]
 default = ["otlp-http"]
 otlp-http = ["opentelemetry-otlp/http-proto"]
-# alias: enables sudachi reading support (use "vibrato" feature for vibrato support)
-reading = ["sudachi"]
+# alias: enables vibrato reading support (default)
+reading = ["vibrato"]
 sudachi = ["dep:sudachi"]
 vibrato = ["dep:vibrato", "dep:zstd"]
 
