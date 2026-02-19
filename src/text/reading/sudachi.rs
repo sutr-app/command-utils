@@ -110,7 +110,7 @@ mod tests {
         // Mode::C groups longer units
         assert!(!result.is_empty());
         // Should contain katakana
-        assert!(result.chars().all(|c| is_katakana_or_punctuation(c)));
+        assert!(result.chars().all(is_katakana_or_punctuation));
     }
 
     #[test]
