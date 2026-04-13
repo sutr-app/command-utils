@@ -1,3 +1,5 @@
+pub mod resolve;
+
 use anyhow::{Context, Result};
 use itertools::Itertools;
 use prost::Message;
