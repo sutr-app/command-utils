@@ -281,11 +281,10 @@ impl ChunkingStatistics {
         }
 
         // Estimate peak memory usage (rough calculation)
-        let avg_chunk_size = if self.total_chunks_created > 0 {
-            self.input_char_count / self.total_chunks_created
-        } else {
-            0
-        };
+        let avg_chunk_size = self
+            .input_char_count
+            .checked_div(self.total_chunks_created)
+            .unwrap_or(0);
         self.estimated_peak_memory_mb =
             (self.input_char_count + avg_chunk_size * self.total_chunks_created * 2) as f32
                 / 1_048_576.0;
