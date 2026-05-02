@@ -1658,4 +1658,52 @@ message TestArg {
         assert_eq!(items.as_list().unwrap().len(), 0);
         Ok(())
     }
+
+    /// Pin proto3 JSON-mapping behaviour: int64 fields MUST accept JSON
+    /// string inputs (in addition to integer inputs) without precision
+    /// loss, even for snowflake-sized values that exceed JS safe-integer
+    /// range (2^53-1). Downstream RAG workflows pass int64 IDs as decimal
+    /// strings end-to-end to avoid silent rounding by JS / function-calling
+    /// clients; if a future prost-reflect upgrade or a misuse of
+    /// `serde_json::Number` ever stops accepting strings here, every RAG
+    /// tool call that round-trips a snowflake breaks. This test catches
+    /// that regression at the lowest layer.
+    #[test]
+    fn test_json_to_message_accepts_int64_as_string_without_precision_loss() -> Result<()> {
+        let proto_string = r#"
+        syntax = "proto3";
+
+        message SnowflakeRequest {
+            int64 memory_id = 1;
+            int64 thread_id = 2;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("SnowflakeRequest").unwrap();
+
+        // 7444174660348207020 > 2^53-1 (9007199254740991): a JS-number
+        // round-trip would clamp the trailing digits.
+        let json = r#"{"memoryId": "7444174660348207020", "threadId": "7444174660348207024"}"#;
+        let bytes = ProtobufDescriptor::json_to_message(msg_desc.clone(), json, true)?;
+        let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
+
+        assert_eq!(
+            decoded
+                .get_field_by_name("memory_id")
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            7444174660348207020_i64,
+            "string-encoded int64 must round-trip with full precision"
+        );
+        assert_eq!(
+            decoded
+                .get_field_by_name("thread_id")
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            7444174660348207024_i64,
+        );
+        Ok(())
+    }
 }
