@@ -254,12 +254,16 @@ impl ProtobufDescriptor {
         normalize_enum: bool,
         ignore_unknown_fields: bool,
     ) -> Result<Vec<u8>> {
+        // Remap oneof group names to actual field names
+        let remapped = Self::remap_oneof_group_names(&descriptor, json_value);
+        let input = remapped.as_ref().unwrap_or(json_value);
+
         let normalized = if normalize_enum {
-            Self::normalize_enum_values(&descriptor, json_value)
+            Self::normalize_enum_values(&descriptor, input)
         } else {
             None
         };
-        let target = normalized.as_ref().unwrap_or(json_value);
+        let target = normalized.as_ref().unwrap_or(input);
         let dynamic_message = if ignore_unknown_fields {
             let options = DeserializeOptions::new().deny_unknown_fields(false);
             DynamicMessage::deserialize_with_options(descriptor, target, &options)
@@ -308,6 +312,112 @@ impl ProtobufDescriptor {
             let dynamic_message = DynamicMessage::deserialize(descriptor, &mut deserializer)?;
             deserializer.end()?;
             Ok(dynamic_message)
+        }
+    }
+
+    /// Remap JSON keys that match protobuf `oneof` group names to the appropriate
+    /// concrete field name.
+    ///
+    /// Protobuf JSON mapping requires the actual field name (e.g. `json_body`),
+    /// not the oneof group name (e.g. `request`).  Workflow DSLs and other
+    /// human-authored JSON often use the group name, so we detect that case and
+    /// pick the best-matching field inside the oneof.
+    ///
+    /// Returns `None` when no remapping was needed (zero-copy path).
+    fn remap_oneof_group_names(
+        descriptor: &MessageDescriptor,
+        json_value: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let serde_json::Value::Object(map) = json_value else {
+            return None;
+        };
+
+        // Collect oneof group names that appear as JSON keys but are NOT real field names.
+        let mut renames: Vec<(String, String, serde_json::Value)> = Vec::new();
+
+        for oneof in descriptor.oneofs() {
+            let group_name = oneof.name().to_string();
+
+            // Skip if the group name is already a real field name (unlikely but defensive).
+            if descriptor.get_field_by_name(&group_name).is_some()
+                || descriptor.get_field_by_json_name(&group_name).is_some()
+            {
+                continue;
+            }
+
+            let value = map.get(&group_name);
+
+            let Some(value) = value else {
+                continue;
+            };
+
+            // Pick the best field: match by JSON value type.
+            let fields: Vec<_> = oneof.fields().collect();
+            let target_field = Self::pick_oneof_field_for_value(&fields, value);
+
+            if let Some(field) = target_field {
+                renames.push((
+                    group_name.clone(),
+                    field.json_name().to_string(),
+                    value.clone(),
+                ));
+            }
+        }
+
+        if renames.is_empty() {
+            return None;
+        }
+
+        let mut new_map = map.clone();
+        for (old_key, new_key, value) in renames {
+            new_map.remove(&old_key);
+            new_map.insert(new_key, value);
+        }
+        Some(serde_json::Value::Object(new_map))
+    }
+
+    /// Pick the oneof field whose protobuf type best matches the JSON value.
+    fn pick_oneof_field_for_value<'a>(
+        fields: &'a [prost_reflect::FieldDescriptor],
+        value: &serde_json::Value,
+    ) -> Option<&'a prost_reflect::FieldDescriptor> {
+        match value {
+            serde_json::Value::String(_) => {
+                // Prefer string fields; fall back to bytes.
+                fields
+                    .iter()
+                    .find(|f| matches!(f.kind(), Kind::String))
+                    .or_else(|| fields.iter().find(|f| matches!(f.kind(), Kind::Bytes)))
+            }
+            serde_json::Value::Object(_) => {
+                fields.iter().find(|f| matches!(f.kind(), Kind::Message(_)))
+            }
+            serde_json::Value::Bool(_) => fields.iter().find(|f| matches!(f.kind(), Kind::Bool)),
+            serde_json::Value::Number(n) => {
+                if n.is_f64() {
+                    fields
+                        .iter()
+                        .find(|f| matches!(f.kind(), Kind::Double | Kind::Float))
+                } else {
+                    fields.iter().find(|f| {
+                        matches!(
+                            f.kind(),
+                            Kind::Int32
+                                | Kind::Int64
+                                | Kind::Uint32
+                                | Kind::Uint64
+                                | Kind::Sint32
+                                | Kind::Sint64
+                                | Kind::Fixed32
+                                | Kind::Fixed64
+                                | Kind::Sfixed32
+                                | Kind::Sfixed64
+                        )
+                    })
+                }
+            }
+            // Arrays and null: no good heuristic — skip.
+            _ => None,
         }
     }
 
@@ -1704,6 +1814,107 @@ message TestArg {
                 .unwrap(),
             7444174660348207024_i64,
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_remap_oneof_group_name_to_field() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        message GrpcArgs {
+            optional string method = 1;
+            oneof request {
+                bytes body = 2;
+                string json_body = 3;
+            }
+            optional uint32 timeout = 5;
+            optional bool as_json = 6;
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("GrpcArgs").unwrap();
+
+        // "request" (oneof group name) with a string value should be remapped to "jsonBody"
+        let input = serde_json::json!({
+            "method": "/test.Service/Method",
+            "request": "{\"key\":\"value\"}",
+            "timeout": 5000,
+            "asJson": true
+        });
+
+        let bytes =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, true, true)?;
+        let decoded = DynamicMessage::decode(msg_desc.clone(), Cursor::new(bytes))?;
+
+        assert_eq!(
+            decoded
+                .get_field_by_name("method")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "/test.Service/Method"
+        );
+        assert_eq!(
+            decoded
+                .get_field_by_name("json_body")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "{\"key\":\"value\"}"
+        );
+        assert_eq!(
+            decoded
+                .get_field_by_name("timeout")
+                .unwrap()
+                .as_u32()
+                .unwrap(),
+            5000
+        );
+        assert!(
+            decoded
+                .get_field_by_name("as_json")
+                .unwrap()
+                .as_bool()
+                .unwrap()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_remap_oneof_no_change_when_field_name_used() -> Result<()> {
+        let proto = r#"
+        syntax = "proto3";
+        message GrpcArgs {
+            optional string method = 1;
+            oneof request {
+                bytes body = 2;
+                string json_body = 3;
+            }
+        }
+        "#;
+        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let msg_desc = descriptor.get_message_by_name("GrpcArgs").unwrap();
+
+        // Using actual field name "jsonBody" should work without remapping.
+        let input = serde_json::json!({
+            "method": "/test.Service/Method",
+            "jsonBody": "{\"key\":\"value\"}"
+        });
+
+        let bytes =
+            ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, true, true)?;
+        let decoded = DynamicMessage::decode(msg_desc, Cursor::new(bytes))?;
+
+        assert_eq!(
+            decoded
+                .get_field_by_name("json_body")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "{\"key\":\"value\"}"
+        );
+
         Ok(())
     }
 }
