@@ -1,4 +1,4 @@
-use super::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType};
+use super::attr::{OtelSpanAttributes, OtelSpanBuilder, OtelSpanType, langfuse_keys};
 use opentelemetry::{
     Context,
     global::BoxedTracer,
@@ -325,7 +325,7 @@ pub trait GenAIOtelClient: Send + Sync {
             && let Ok(output_str) = serde_json::to_string(output)
         {
             span.set_attribute(opentelemetry::KeyValue::new(
-                "langfuse.observation.output",
+                langfuse_keys::OBSERVATION_OUTPUT,
                 output_str,
             ));
         }
@@ -346,7 +346,7 @@ pub trait GenAIOtelClient: Send + Sync {
             && let Ok(trace_str) = serde_json::to_string(trace_output)
         {
             span.set_attribute(opentelemetry::KeyValue::new(
-                "langfuse.trace.output",
+                langfuse_keys::TRACE_OUTPUT,
                 trace_str,
             ));
         }
@@ -368,7 +368,7 @@ pub trait GenAIOtelClient: Send + Sync {
 
             // Always set observation output (external call result)
             span.set_attribute(opentelemetry::KeyValue::new(
-                "langfuse.observation.output",
+                langfuse_keys::OBSERVATION_OUTPUT,
                 output_str.clone(),
             ));
 
@@ -383,7 +383,7 @@ pub trait GenAIOtelClient: Send + Sync {
             // For now, use the same value for trace output as fallback
             // In practice, this should be set explicitly by the caller
             span.set_attribute(opentelemetry::KeyValue::new(
-                "langfuse.trace.output",
+                langfuse_keys::TRACE_OUTPUT,
                 output_str,
             ));
         }
@@ -561,7 +561,7 @@ pub trait RemoteSpanClient: GenAIOtelClient + Send + Sync {
                                 && let Ok(output_str) = serde_json::to_string(output)
                             {
                                 span.set_attribute(opentelemetry::KeyValue::new(
-                                    "langfuse.observation.output",
+                                    langfuse_keys::OBSERVATION_OUTPUT,
                                     output_str,
                                 ));
                             }
@@ -582,7 +582,7 @@ pub trait RemoteSpanClient: GenAIOtelClient + Send + Sync {
                                 && let Ok(trace_str) = serde_json::to_string(trace_output)
                             {
                                 span.set_attribute(opentelemetry::KeyValue::new(
-                                    "langfuse.trace.output",
+                                    langfuse_keys::TRACE_OUTPUT,
                                     trace_str,
                                 ));
                             }
@@ -616,7 +616,7 @@ pub trait RemoteSpanClient: GenAIOtelClient + Send + Sync {
 
                                 // Always set observation output (external call result)
                                 span.set_attribute(opentelemetry::KeyValue::new(
-                                    "langfuse.observation.output",
+                                    langfuse_keys::OBSERVATION_OUTPUT,
                                     output_str.clone(),
                                 ));
 
@@ -630,7 +630,7 @@ pub trait RemoteSpanClient: GenAIOtelClient + Send + Sync {
 
                                 // Use the same value for trace output as fallback
                                 span.set_attribute(opentelemetry::KeyValue::new(
-                                    "langfuse.trace.output",
+                                    langfuse_keys::TRACE_OUTPUT,
                                     output_str,
                                 ));
                             }
@@ -643,7 +643,7 @@ pub trait RemoteSpanClient: GenAIOtelClient + Send + Sync {
 
                             // Always set observation output (external call result)
                             span.set_attribute(opentelemetry::KeyValue::new(
-                                "langfuse.observation.output",
+                                langfuse_keys::OBSERVATION_OUTPUT,
                                 output_str.clone(),
                             ));
 
@@ -657,7 +657,7 @@ pub trait RemoteSpanClient: GenAIOtelClient + Send + Sync {
 
                             // Use the same value for trace output as fallback
                             span.set_attribute(opentelemetry::KeyValue::new(
-                                "langfuse.trace.output",
+                                langfuse_keys::TRACE_OUTPUT,
                                 output_str,
                             ));
                         }

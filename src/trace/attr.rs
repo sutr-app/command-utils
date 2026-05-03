@@ -2,6 +2,42 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Langfuse-specific span attribute keys.
+///
+/// Langfuse maps incoming OpenTelemetry spans to its data model via these keys
+/// (see <https://langfuse.com/docs/opentelemetry/get-started>). Centralising the
+/// strings here prevents typo-driven attribute drift between the producer
+/// (`impls.rs`, `otel_span.rs`) and call sites that stamp attributes directly
+/// onto a started `Span` (LLM helpers, workflow runner).
+pub mod langfuse_keys {
+    pub const OBSERVATION_TYPE: &str = "langfuse.observation.type";
+    pub const OBSERVATION_INPUT: &str = "langfuse.observation.input";
+    pub const OBSERVATION_OUTPUT: &str = "langfuse.observation.output";
+    pub const OBSERVATION_LEVEL: &str = "langfuse.observation.level";
+    pub const OBSERVATION_STATUS_MESSAGE: &str = "langfuse.observation.status_message";
+    pub const OBSERVATION_MODEL_NAME: &str = "langfuse.observation.model.name";
+    pub const OBSERVATION_MODEL_PARAMETERS: &str = "langfuse.observation.model_parameters";
+    pub const OBSERVATION_USAGE_DETAILS: &str = "langfuse.observation.usage_details";
+    pub const OBSERVATION_COST_DETAILS: &str = "langfuse.observation.cost_details";
+    pub const OBSERVATION_COMPLETION_START_TIME: &str =
+        "langfuse.observation.completion_start_time";
+    /// Prefix for dynamic metadata keys; consumers append `.{key}` to this.
+    pub const OBSERVATION_METADATA_PREFIX: &str = "langfuse.observation.metadata";
+
+    pub const TRACE_NAME: &str = "langfuse.trace.name";
+    pub const TRACE_INPUT: &str = "langfuse.trace.input";
+    pub const TRACE_OUTPUT: &str = "langfuse.trace.output";
+    pub const TRACE_TAGS: &str = "langfuse.trace.tags";
+    pub const TRACE_PUBLIC: &str = "langfuse.trace.public";
+    /// Prefix for dynamic trace metadata keys; consumers append `.{key}` to this.
+    pub const TRACE_METADATA_PREFIX: &str = "langfuse.trace.metadata";
+
+    pub const VERSION: &str = "langfuse.version";
+    pub const RELEASE: &str = "langfuse.release";
+    pub const PROMPT_NAME: &str = "langfuse.prompt.name";
+    pub const PROMPT_VERSION: &str = "langfuse.prompt.version";
+}
+
 /// Span types based on OpenTelemetry standards
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
