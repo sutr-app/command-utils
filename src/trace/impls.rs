@@ -1,5 +1,5 @@
 use super::{
-    attr::{OtelSpanAttributes, OtelSpanType},
+    attr::{OtelSpanAttributes, OtelSpanType, langfuse_keys},
     otel_span::{GenAIOtelClient, RemoteSpanClient},
 };
 use opentelemetry::{
@@ -58,7 +58,7 @@ impl GenAIOtelClient for GenericOtelClient {
 
         // Core Langfuse observation attributes
         key_values.push(KeyValue::new(
-            "langfuse.observation.type",
+            langfuse_keys::OBSERVATION_TYPE,
             match attributes.span_type {
                 OtelSpanType::Span => "span",
                 OtelSpanType::Generation => "generation",
@@ -77,24 +77,24 @@ impl GenAIOtelClient for GenericOtelClient {
 
         // Version and release information
         if let Some(version) = attributes.version {
-            key_values.push(KeyValue::new("langfuse.version", version));
+            key_values.push(KeyValue::new(langfuse_keys::VERSION, version));
         }
 
         if let Some(release) = attributes.release {
-            key_values.push(KeyValue::new("langfuse.release", release));
+            key_values.push(KeyValue::new(langfuse_keys::RELEASE, release));
         }
 
         // Tags as array values or comma-separated strings
         if !attributes.tags.is_empty() {
             // For compatibility with Langfuse server, use array format
             let tags_str = serde_json::to_string(&attributes.tags).unwrap_or_default();
-            key_values.push(KeyValue::new("langfuse.trace.tags", tags_str));
+            key_values.push(KeyValue::new(langfuse_keys::TRACE_TAGS, tags_str));
         }
 
         // Model information (OpenTelemetry gen_ai.* standard attributes)
         if let Some(model) = attributes.model {
             key_values.push(KeyValue::new(
-                "langfuse.observation.model.name",
+                langfuse_keys::OBSERVATION_MODEL_NAME,
                 model.clone(),
             ));
             // Also add gen_ai standard attributes for compatibility
@@ -106,7 +106,7 @@ impl GenAIOtelClient for GenericOtelClient {
             // Add as JSON string for Langfuse
             if let Ok(params_str) = serde_json::to_string(model_parameters) {
                 key_values.push(KeyValue::new(
-                    "langfuse.observation.model_parameters",
+                    langfuse_keys::OBSERVATION_MODEL_PARAMETERS,
                     params_str,
                 ));
             }
@@ -144,12 +144,12 @@ impl GenAIOtelClient for GenericOtelClient {
 
         // Observation level and status
         if let Some(level) = attributes.level {
-            key_values.push(KeyValue::new("langfuse.observation.level", level));
+            key_values.push(KeyValue::new(langfuse_keys::OBSERVATION_LEVEL, level));
         }
 
         if let Some(status_message) = attributes.status_message {
             key_values.push(KeyValue::new(
-                "langfuse.observation.status_message",
+                langfuse_keys::OBSERVATION_STATUS_MESSAGE,
                 status_message,
             ));
         }
@@ -159,7 +159,7 @@ impl GenAIOtelClient for GenericOtelClient {
             && let Ok(input_str) = serde_json::to_string(input)
         {
             key_values.push(KeyValue::new(
-                "langfuse.observation.input",
+                langfuse_keys::OBSERVATION_INPUT,
                 input_str.clone(),
             ));
             // Add gen_ai.prompt for OpenTelemetry compatibility
@@ -170,7 +170,7 @@ impl GenAIOtelClient for GenericOtelClient {
             && let Ok(output_str) = serde_json::to_string(output)
         {
             key_values.push(KeyValue::new(
-                "langfuse.observation.output",
+                langfuse_keys::OBSERVATION_OUTPUT,
                 output_str.clone(),
             ));
             // Add gen_ai.completion for OpenTelemetry compatibility
@@ -182,7 +182,7 @@ impl GenAIOtelClient for GenericOtelClient {
             for (key, value) in metadata {
                 if let Ok(value_str) = serde_json::to_string(&value) {
                     key_values.push(KeyValue::new(
-                        format!("langfuse.observation.metadata.{key}"),
+                        format!("{}.{key}", langfuse_keys::OBSERVATION_METADATA_PREFIX),
                         value_str,
                     ));
                 }
@@ -194,7 +194,7 @@ impl GenAIOtelClient for GenericOtelClient {
             && let Ok(params_str) = serde_json::to_string(&model_parameters)
         {
             key_values.push(KeyValue::new(
-                "langfuse.observation.model_parameters",
+                langfuse_keys::OBSERVATION_MODEL_PARAMETERS,
                 params_str,
             ));
         }
@@ -203,7 +203,7 @@ impl GenAIOtelClient for GenericOtelClient {
         if let Some(usage) = &attributes.usage {
             if let Ok(usage_str) = serde_json::to_string(usage) {
                 key_values.push(KeyValue::new(
-                    "langfuse.observation.usage_details",
+                    langfuse_keys::OBSERVATION_USAGE_DETAILS,
                     usage_str,
                 ));
             }
@@ -234,7 +234,10 @@ impl GenAIOtelClient for GenericOtelClient {
         // Cost details as JSON string and gen_ai.usage.cost
         if let Some(cost_details) = &attributes.cost_details {
             if let Ok(cost_str) = serde_json::to_string(cost_details) {
-                key_values.push(KeyValue::new("langfuse.observation.cost_details", cost_str));
+                key_values.push(KeyValue::new(
+                    langfuse_keys::OBSERVATION_COST_DETAILS,
+                    cost_str,
+                ));
             }
 
             // Add total cost as gen_ai.usage.cost for OpenTelemetry compatibility
@@ -245,12 +248,12 @@ impl GenAIOtelClient for GenericOtelClient {
 
         // Prompt information
         if let Some(prompt_name) = attributes.prompt_name {
-            key_values.push(KeyValue::new("langfuse.prompt.name", prompt_name));
+            key_values.push(KeyValue::new(langfuse_keys::PROMPT_NAME, prompt_name));
         }
 
         if let Some(prompt_version) = attributes.prompt_version {
             key_values.push(KeyValue::new(
-                "langfuse.prompt.version",
+                langfuse_keys::PROMPT_VERSION,
                 prompt_version.to_string(),
             ));
         }
@@ -258,41 +261,41 @@ impl GenAIOtelClient for GenericOtelClient {
         // Completion start time
         if let Some(completion_start_time) = attributes.completion_start_time {
             key_values.push(KeyValue::new(
-                "langfuse.observation.completion_start_time",
+                langfuse_keys::OBSERVATION_COMPLETION_START_TIME,
                 completion_start_time,
             ));
         }
 
         if let Some(trace_name) = attributes.trace_name {
-            key_values.push(KeyValue::new("langfuse.trace.name", trace_name));
+            key_values.push(KeyValue::new(langfuse_keys::TRACE_NAME, trace_name));
         }
 
         if let Some(trace_input) = attributes.trace_input
             && let Ok(input_str) = serde_json::to_string(&trace_input)
         {
-            key_values.push(KeyValue::new("langfuse.trace.input", input_str));
+            key_values.push(KeyValue::new(langfuse_keys::TRACE_INPUT, input_str));
         }
 
         if let Some(trace_output) = attributes.trace_output
             && let Ok(output_str) = serde_json::to_string(&trace_output)
         {
-            key_values.push(KeyValue::new("langfuse.trace.output", output_str));
+            key_values.push(KeyValue::new(langfuse_keys::TRACE_OUTPUT, output_str));
         }
 
         if !attributes.trace_tags.is_empty() {
             let trace_tags_str = serde_json::to_string(&attributes.trace_tags).unwrap_or_default();
-            key_values.push(KeyValue::new("langfuse.trace.tags", trace_tags_str));
+            key_values.push(KeyValue::new(langfuse_keys::TRACE_TAGS, trace_tags_str));
         }
 
         if let Some(trace_public) = attributes.trace_public {
-            key_values.push(KeyValue::new("langfuse.trace.public", trace_public));
+            key_values.push(KeyValue::new(langfuse_keys::TRACE_PUBLIC, trace_public));
         }
 
         if let Some(trace_metadata) = attributes.trace_metadata {
             for (key, value) in trace_metadata {
                 if let Ok(value_str) = serde_json::to_string(&value) {
                     key_values.push(KeyValue::new(
-                        format!("langfuse.trace.metadata.{key}"),
+                        format!("{}.{key}", langfuse_keys::TRACE_METADATA_PREFIX),
                         value_str,
                     ));
                 }
