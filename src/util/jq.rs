@@ -88,6 +88,19 @@ pub fn execute_jq(
         }
     }
 
+    // Surface jaq runtime errors instead of silently dropping them.
+    // Without this, a failing path access (e.g. `null | .x`) leaves `values` empty
+    // and we return `Value::Array([])`, which then poisons downstream type checks
+    // (proto schema parse, etc.) with a misleading "expected X, got sequence" error.
+    if !errs.is_empty() {
+        let msg = errs
+            .iter()
+            .map(|e| format!("{e}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(anyhow!("jq runtime error for '{filter_expr}': {msg}"));
+    }
+
     if values.len() == 1 {
         return Ok(values.pop().expect("values.len() == 1, should not happen"));
     }
@@ -250,6 +263,22 @@ mod tests {
         assert!(
             msg.matches("undefined").count() >= 2,
             "Should have at least 2 undefined errors: {msg}"
+        );
+    }
+
+    #[test]
+    fn runtime_error_is_returned_not_silently_dropped() {
+        // Regression test: `null | .x` raises a jaq runtime error in jaq 2.x.
+        // The previous implementation silently dropped it and returned an empty
+        // `Value::Array([])`, which propagated as a misleading
+        // "expected string, got sequence" downstream when assigning into a proto field.
+        let values = BTreeMap::new();
+        let err = execute_jq(json!(null), ".setting.titleSelector // \"\"", &values)
+            .expect_err("null path access must surface as Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("jq runtime error"),
+            "expected runtime error message, got: {msg}"
         );
     }
 
