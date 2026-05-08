@@ -16,9 +16,9 @@ envy = { version = "0.4" }
 futures = { version = "0.3" }
 # http = { version = "1" }
 itertools = "0.14"
-jaq-core = { version = "2" }
-jaq-json = { version = "1", features = ["serde_json"] }
-jaq-std = { version = "2" }
+jaq-core = { version = "3" }
+jaq-json = { version = "2", features = ["serde"] }
+jaq-std = { version = "3" }
 # liquid = "0.26"
 liquid-core = { version = "0.26", features = ["derive"] }
 # liquid-lib = "0.26"
