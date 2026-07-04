@@ -19,6 +19,7 @@ itertools = "0.14"
 jaq-core = { version = "3" }
 jaq-json = { version = "2", features = ["serde"] }
 jaq-std = { version = "3" }
+chrono-tz = { version = "0.10" }
 # liquid = "0.26"
 liquid-core = { version = "0.26", features = ["derive"] }
 # liquid-lib = "0.26"

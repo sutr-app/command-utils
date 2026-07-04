@@ -292,34 +292,179 @@ pub mod string {
 
 pub mod datetime {
     use anyhow::{Context, Result, anyhow};
-    use chrono::{DateTime, Datelike, FixedOffset, LocalResult, TimeZone, Utc};
+    use chrono::{DateTime, Datelike, FixedOffset, LocalResult, Offset, TimeZone, Utc};
+    use chrono_tz::{Tz, UTC};
     use once_cell::sync::Lazy;
     use regex::Regex;
 
+    static TIME_ZONE: Lazy<Option<Tz>> = Lazy::<Option<Tz>>::new(|| {
+        let tz_var = std::env::var("TZ").ok()?;
+        let tz_name = non_empty_trimmed(&tz_var)?;
+        match tz_name.parse::<Tz>() {
+            Ok(tz) => Some(tz),
+            Err(e) => {
+                tracing::warn!(
+                    "invalid TZ '{tz_name}', falling back to offset hours (or UTC): {e}"
+                );
+                None
+            }
+        }
+    });
+
     pub static OFFSET_SEC: Lazy<i32> = Lazy::<i32>::new(|| {
-        std::env::var("TZ_OFFSET_HOURS")
-            .map_err(|e| -> anyhow::Error { e.into() })
-            .and_then(|s| s.parse::<i32>().map_err(|e| -> anyhow::Error { e.into() }))
-            .unwrap_or(9)
-            * 3600
+        offset_sec_from_hours(std::env::var("TZ_OFFSET_HOURS").ok().as_deref())
     });
 
     pub static TZ_OFFSET: Lazy<FixedOffset> =
-        Lazy::<FixedOffset>::new(|| FixedOffset::east_opt(*OFFSET_SEC).unwrap());
+        Lazy::<FixedOffset>::new(|| fixed_offset_or_utc(*OFFSET_SEC));
+
+    pub fn resolve_offset_sec(tz: Option<&str>, offset_hours: Option<&str>) -> i32 {
+        resolve_offset_sec_at(tz, offset_hours, Utc::now().timestamp())
+    }
+
+    pub fn resolve_offset_sec_at(
+        tz: Option<&str>,
+        offset_hours: Option<&str>,
+        epoch_sec: i64,
+    ) -> i32 {
+        match tz.and_then(non_empty_trimmed) {
+            Some(tz_name) => match offset_sec_from_tz_at(tz_name, epoch_sec) {
+                Ok(offset_sec) => offset_sec,
+                Err(e) => {
+                    tracing::warn!(
+                        "invalid TZ '{tz_name}', falling back to offset hours (or UTC): {e}"
+                    );
+                    offset_sec_from_hours(offset_hours)
+                }
+            },
+            None => offset_sec_from_hours(offset_hours),
+        }
+    }
+
+    fn non_empty_trimmed(value: &str) -> Option<&str> {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }
+
+    fn offset_sec_from_tz_at(tz_name: &str, epoch_sec: i64) -> Result<i32> {
+        let tz = tz_name.parse::<Tz>().map_err(|e| anyhow!(e))?;
+        Ok(offset_sec_in_tz(&tz, epoch_sec))
+    }
+
+    fn offset_sec_in_tz(tz: &Tz, epoch_sec: i64) -> i32 {
+        DateTime::from_timestamp(epoch_sec, 0)
+            .map(|dt| dt.with_timezone(tz).offset().fix().local_minus_utc())
+            // Only reachable for epochs outside chrono's representable range; treat as UTC
+            // to keep the fallback story uniform with the rest of the module.
+            .unwrap_or(0)
+    }
+
+    fn offset_sec_from_hours(offset_hours: Option<&str>) -> i32 {
+        offset_hours
+            .and_then(non_empty_trimmed)
+            .and_then(|s| s.parse::<i32>().ok())
+            .and_then(|hours| hours.checked_mul(3600))
+            // FixedOffset only accepts |seconds| < 86_400; reject anything wider.
+            .filter(|offset_sec| offset_sec.abs() < 86_400)
+            .unwrap_or(0)
+    }
+
+    fn fixed_offset_or_utc(offset_sec: i32) -> FixedOffset {
+        FixedOffset::east_opt(offset_sec).unwrap_or_else(|| {
+            tracing::warn!("invalid timezone offset seconds '{offset_sec}', falling back to UTC");
+            FixedOffset::east_opt(0).expect("UTC offset must be valid")
+        })
+    }
+
+    fn offset_for_epoch_sec(epoch_sec: i64) -> FixedOffset {
+        TIME_ZONE
+            .as_ref()
+            .map(|tz| fixed_offset_or_utc(offset_sec_in_tz(tz, epoch_sec)))
+            .unwrap_or(*TZ_OFFSET)
+    }
+
+    fn configured_timezone_or_utc() -> Tz {
+        TIME_ZONE.unwrap_or(UTC)
+    }
+
+    fn local_datetime_in_configured_tz(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        min: u32,
+        sec: u32,
+    ) -> Result<Option<DateTime<FixedOffset>>> {
+        let Some(tz) = TIME_ZONE.as_ref() else {
+            return Ok(None);
+        };
+
+        match tz.with_ymd_and_hms(year, month, day, hour, min, sec) {
+            // Ambiguous local times (DST fall-back) resolve to the earlier instant.
+            LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => {
+                Ok(Some(dt.with_timezone(&dt.offset().fix())))
+            }
+            LocalResult::None => Err(anyhow!(
+                "ymdhms error: {year}-{month}-{day} {hour}:{min}:{sec}, no local time in TZ"
+            )),
+        }
+    }
 
     pub fn from_epoch_sec(epoch_sec: i64) -> DateTime<FixedOffset> {
-        let utc_date_time = DateTime::from_timestamp_millis(epoch_sec * 1000).unwrap();
-        utc_date_time.with_timezone(&*TZ_OFFSET)
+        match TIME_ZONE.as_ref() {
+            Some(_) => from_epoch_sec_tz(epoch_sec).fixed_offset(),
+            None => {
+                let utc_date_time = DateTime::from_timestamp(epoch_sec, 0).unwrap();
+                utc_date_time.with_timezone(&offset_for_epoch_sec(epoch_sec))
+            }
+        }
+    }
+
+    pub fn from_epoch_sec_in_tz(epoch_sec: i64, tz: Tz) -> DateTime<Tz> {
+        DateTime::from_timestamp(epoch_sec, 0)
+            .unwrap()
+            .with_timezone(&tz)
+    }
+
+    pub fn from_epoch_sec_tz(epoch_sec: i64) -> DateTime<Tz> {
+        from_epoch_sec_in_tz(epoch_sec, configured_timezone_or_utc())
     }
 
     pub fn from_epoch_milli(epoch_milli: i64) -> DateTime<FixedOffset> {
+        match TIME_ZONE.as_ref() {
+            Some(_) => from_epoch_milli_tz(epoch_milli).fixed_offset(),
+            None => DateTime::from_timestamp_millis(epoch_milli)
+                .unwrap()
+                .with_timezone(&offset_for_epoch_sec(epoch_milli / 1000)),
+        }
+    }
+
+    pub fn from_epoch_milli_in_tz(epoch_milli: i64, tz: Tz) -> DateTime<Tz> {
         DateTime::from_timestamp_millis(epoch_milli)
             .unwrap()
-            .with_timezone(&*TZ_OFFSET)
+            .with_timezone(&tz)
+    }
+
+    pub fn from_epoch_milli_tz(epoch_milli: i64) -> DateTime<Tz> {
+        from_epoch_milli_in_tz(epoch_milli, configured_timezone_or_utc())
     }
 
     pub fn now() -> DateTime<FixedOffset> {
-        Utc::now().with_timezone(&FixedOffset::east_opt(*OFFSET_SEC).unwrap())
+        match TIME_ZONE.as_ref() {
+            Some(_) => now_tz().fixed_offset(),
+            None => {
+                let now = Utc::now();
+                now.with_timezone(&offset_for_epoch_sec(now.timestamp()))
+            }
+        }
+    }
+
+    pub fn now_in_tz(tz: Tz) -> DateTime<Tz> {
+        Utc::now().with_timezone(&tz)
+    }
+
+    pub fn now_tz() -> DateTime<Tz> {
+        now_in_tz(configured_timezone_or_utc())
     }
 
     #[inline]
@@ -369,6 +514,10 @@ pub mod datetime {
         min: u32,
         sec: u32,
     ) -> Result<DateTime<FixedOffset>> {
+        if let Some(dt) = local_datetime_in_configured_tz(year, month, day, hour, min, sec)? {
+            return Ok(dt);
+        }
+
         match TZ_OFFSET.with_ymd_and_hms(year, month, day, hour, min, sec) {
             LocalResult::Single(res) => Ok(res),
             e => Err(anyhow!(
@@ -413,6 +562,96 @@ pub mod datetime {
             anyhow!("error in parsing datetime: {e:?}")
         })
         .and_then(|dt| dt) // flatten
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            from_epoch_milli_in_tz, from_epoch_sec, from_epoch_sec_in_tz, resolve_offset_sec,
+            resolve_offset_sec_at,
+        };
+        use chrono::{DateTime, FixedOffset, Offset};
+        use chrono_tz::Europe::Paris;
+
+        #[test]
+        fn tz_takes_precedence_over_offset_hours() {
+            assert_eq!(resolve_offset_sec(Some("Asia/Tokyo"), Some("1")), 9 * 3600);
+        }
+
+        #[test]
+        fn tz_offset_is_resolved_for_the_target_epoch() {
+            let winter = resolve_offset_sec_at(Some("Europe/Paris"), Some("9"), 1736938800);
+            let summer = resolve_offset_sec_at(Some("Europe/Paris"), Some("9"), 1752573600);
+
+            assert_eq!(winter, 3600);
+            assert_eq!(summer, 2 * 3600);
+        }
+
+        #[test]
+        fn offset_hours_is_used_when_tz_is_missing() {
+            assert_eq!(resolve_offset_sec(None, Some("1")), 3600);
+        }
+
+        #[test]
+        fn empty_tz_uses_offset_hours() {
+            assert_eq!(resolve_offset_sec(Some(""), Some("2")), 2 * 3600);
+        }
+
+        #[test]
+        fn defaults_to_utc_when_tz_and_offset_hours_are_missing() {
+            assert_eq!(resolve_offset_sec(None, None), 0);
+        }
+
+        #[test]
+        fn invalid_tz_falls_back_to_offset_hours() {
+            assert_eq!(
+                resolve_offset_sec(Some("Invalid/Zone"), Some("2")),
+                2 * 3600
+            );
+        }
+
+        #[test]
+        fn invalid_tz_defaults_to_utc_when_offset_hours_is_missing() {
+            assert_eq!(resolve_offset_sec(Some("Invalid/Zone"), None), 0);
+        }
+
+        #[test]
+        fn invalid_offset_hours_defaults_to_utc() {
+            assert_eq!(resolve_offset_sec(None, Some("invalid")), 0);
+        }
+
+        #[test]
+        fn out_of_range_offset_hours_defaults_to_utc() {
+            assert_eq!(resolve_offset_sec(None, Some("24")), 0);
+        }
+
+        #[test]
+        fn from_epoch_sec_in_tz_returns_timezone_aware_datetime() {
+            let winter = from_epoch_sec_in_tz(1736938800, Paris);
+            let summer = from_epoch_sec_in_tz(1752573600, Paris);
+
+            assert_eq!(winter.timezone(), Paris);
+            assert_eq!(summer.timezone(), Paris);
+            assert_eq!(winter.offset().fix().local_minus_utc(), 3600);
+            assert_eq!(summer.offset().fix().local_minus_utc(), 2 * 3600);
+        }
+
+        #[test]
+        fn from_epoch_milli_in_tz_returns_timezone_aware_datetime() {
+            let dt = from_epoch_milli_in_tz(1752573600123, Paris);
+
+            assert_eq!(dt.timezone(), Paris);
+            assert_eq!(dt.timestamp_millis(), 1752573600123);
+            assert_eq!(dt.offset().fix().local_minus_utc(), 2 * 3600);
+        }
+
+        #[test]
+        fn fixed_offset_epoch_function_matches_timezone_aware_conversion() {
+            let fixed: DateTime<FixedOffset> = from_epoch_sec(1736938800);
+            let timezone_aware = from_epoch_sec_in_tz(1736938800, chrono_tz::UTC);
+
+            assert_eq!(fixed.timestamp(), timezone_aware.timestamp());
+        }
     }
 }
 pub mod text {
