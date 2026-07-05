@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use rand::Rng;
+use rand::RngExt;
 use snowflake::SnowflakeIdBucket;
 use std::sync::{Arc, Mutex};
 
