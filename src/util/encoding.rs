@@ -32,6 +32,6 @@ pub fn encode_to_utf8_raw(input: &[u8]) -> Result<String> {
         c.decode(input, DecoderTrap::Ignore)
             .map_err(|e| anyhow!("Error:{e:?}"))
     } else {
-        Err(anyhow!("cannot find character encodings: {:?}", &result))
+        Err(anyhow!("cannot find character encodings: {:?}", result))
     }
 }

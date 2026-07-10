@@ -29,7 +29,7 @@ pub trait ProtobufDescriptorLoader {
             .file_descriptor_set_path(&descriptor_file) // for reflection
             .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
             .compile_protos(&[&tempfile], &[&tempdir.path().to_path_buf()])
-            .context(format!("Failed to compile protos {:?}", &tempfile))?;
+            .context(format!("Failed to compile protos {:?}", tempfile))?;
 
         let descriptor = Self::_load_protobuf_descriptor(&descriptor_file)?;
         Ok(descriptor)
@@ -55,7 +55,7 @@ pub trait ProtobufDescriptorLoader {
         // For now we need to write files to the disk.
         fs::write(&tempfile, proto_string).context(format!(
             "on saving tempfile for proto: {:?}",
-            &tempfile.to_str()
+            tempfile.to_str()
         ))?;
         Ok((temp_dir, tempfile))
     }
