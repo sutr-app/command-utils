@@ -89,28 +89,21 @@ pub fn execute_jq(
 
     let input_val = serde_json::from_value::<Val>(input)
         .map_err(|e| anyhow!("failed to convert jq input value: {e}"))?;
-    let mut errs = Vec::new();
     let mut values = Vec::new();
     // `unwrap_valr` strips internal control-flow exceptions (tail call,
     // break) that must never reach the caller, leaving only proper errors.
+    //
+    // Stop on the first runtime error. jaq-json `fromjson` uses `parse_many`,
+    // which peeks an invalid token without consuming it, so the iterator
+    // never ends. Collecting those errors (each of which embeds the whole
+    // input) is what OOMs workflow export on markdown-fenced LLM output.
     for r in filter.id.run((ctx, input_val)) {
         match unwrap_valr(r) {
             Ok(v) => values.push(val_to_json(v)?),
-            Err(e) => errs.push(e),
+            Err(e) => {
+                return Err(anyhow!("jq runtime error for '{filter_expr}': {e}"));
+            }
         }
-    }
-
-    // Surface jaq runtime errors instead of silently dropping them.
-    // Without this, a failing path access (e.g. `null | .x`) leaves `values` empty
-    // and we return `Value::Array([])`, which then poisons downstream type checks
-    // (proto schema parse, etc.) with a misleading "expected X, got sequence" error.
-    if !errs.is_empty() {
-        let msg = errs
-            .iter()
-            .map(|e| format!("{e}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(anyhow!("jq runtime error for '{filter_expr}': {msg}"));
     }
 
     if values.len() == 1 {
@@ -409,5 +402,60 @@ mod tests {
     #[test]
     fn round_trip_object_keys_preserved() {
         assert_round_trip(json!({"z": 1, "a": 2, "m": 3}));
+    }
+
+    fn assert_fromjson_finishes_with_error(input: serde_json::Value, filter: &str) {
+        use std::time::{Duration, Instant};
+        let started = Instant::now();
+        let err = execute_jq(input, filter, &BTreeMap::new())
+            .expect_err("invalid JSON must surface as a jq runtime error");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "fromjson must return instead of collecting an unbounded jaq stream"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("jq runtime error"),
+            "expected runtime error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn fromjson_valid_object_returns_value() {
+        let input = json!({
+            "content": { "text": "{\"category\":\"coding\"}" }
+        });
+        let result = execute_jq(input, ".content.text | fromjson", &BTreeMap::new()).unwrap();
+        assert_eq!(result, json!({"category": "coding"}));
+    }
+
+    #[test]
+    fn fromjson_ndjson_returns_array() {
+        let input = json!("1 2 3");
+        let result = execute_jq(input, "fromjson", &BTreeMap::new()).unwrap();
+        assert_eq!(result, json!([1, 2, 3]));
+    }
+
+    // jaq-json's fromjson uses parse_many. An invalid leading token (markdown
+    // fence, bare word) is peeked but not consumed, so the iterator never
+    // ends unless the caller stops on the first error.
+    #[test]
+    fn fromjson_markdown_fence_returns_error_without_hanging() {
+        let input = json!({
+            "content": {
+                "text": "```json\n{\"category\":\"coding\"}\n```"
+            }
+        });
+        assert_fromjson_finishes_with_error(input, ".content.text | fromjson");
+    }
+
+    #[test]
+    fn fromjson_invalid_leading_token_returns_error_without_hanging() {
+        assert_fromjson_finishes_with_error(json!("hello"), "fromjson");
+    }
+
+    #[test]
+    fn fromjson_valid_then_invalid_token_returns_error_without_hanging() {
+        assert_fromjson_finishes_with_error(json!("{\"category\":\"coding\"}`"), "fromjson");
     }
 }
