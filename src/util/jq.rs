@@ -3,77 +3,213 @@
 
 //! Library to hide details of jaq from the rest of weaver.
 
+use super::cache::checked_time_to_idle;
 use anyhow::{Result, anyhow};
 use jaq_core::{
-    Compiler, Ctx, Vars,
+    Compiler, Ctx, Filter, Vars,
     data::JustLut,
-    load::{Arena, File, Loader},
+    load::{Arena, File, Loader, parse::Def},
     unwrap_valr,
 };
 use jaq_json::{Num, Val};
-use std::{collections::BTreeMap, sync::Arc};
+use serde::Deserialize;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 type JqFileType = ();
 type JqData = JustLut<Val>;
+/// Filter text and the ordered names of the globals it was compiled with.
+type FilterCacheKey = (String, Vec<String>);
 
-// use jaq_core::load::parse::Def,
-// fn semconv_prelude() -> impl Iterator<Item = Def<&'static str>> {
-//     jaq_core::load::parse(crate::SEMCONV_JQ, |p| p.defs())
-//         .expect("BAD WEAVER BUILD - default JQ library failed to compile")
-//         .into_iter()
-// }
+/// Memory budget of a compiled filter. Every compiled program embeds the
+/// compiled standard-library definitions it links (about 86 KiB measured with
+/// jaq 3), plus terms that grow with the filter text (30-45 bytes per byte of
+/// text measured; 48 is used to stay on the safe side).
+const FILTER_BASE_BYTES: u64 = 86 * 1024;
+const FILTER_BYTES_PER_CHAR: u64 = 48;
 
-fn prepare_jq_context(
-    params: &std::collections::BTreeMap<String, Arc<serde_json::Value>>,
-) -> Result<(Vec<String>, Vec<Val>)> {
-    params
-        .iter()
-        .map(|(k, v)| {
-            let val = serde_json::from_value::<Val>((**v).clone())
-                .map_err(|e| anyhow!("failed to convert jq context variable ${k}: {e}"))?;
-            Ok((format!("${k}"), val))
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(|pairs| pairs.into_iter().unzip())
+/// Estimated heap size of a compiled filter, used to weigh cache entries.
+pub fn estimated_filter_bytes(filter_expr: &str) -> u32 {
+    let bytes = FILTER_BASE_BYTES + FILTER_BYTES_PER_CHAR * filter_expr.len() as u64;
+    u32::try_from(bytes).unwrap_or(u32::MAX)
 }
 
-/// This is our single entry point for calling into the jaq library to run jq filters.
-/// TODO: reuse the same jaq context for multiple calls.
-pub fn execute_jq(
-    // The JSON input to JQ.
-    input: serde_json::Value,
-    // The JQ filter to compile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JqFilterCacheConfig {
+    /// Upper bound of the estimated memory held by cached filters.
+    /// 0 disables caching.
+    pub max_bytes: u64,
+    /// Drop filters not used for this long. `None` keeps them until evicted
+    /// by `max_bytes`. Values beyond [`super::cache::MAX_TIME_TO_IDLE`] also
+    /// disable idle expiry.
+    pub time_to_idle: Option<Duration>,
+}
+
+impl Default for JqFilterCacheConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: 32 * 1024 * 1024,
+            time_to_idle: Some(Duration::from_secs(30 * 60)),
+        }
+    }
+}
+
+/// Cache of compiled jq programs.
+///
+/// Keys are the filter text and the ordered names bound as globals: jaq binds
+/// globals by position, so the same text compiled against a different variable
+/// set is a different program. Only programs are cached; values are bound on
+/// every call, so changes to the variables are always seen.
+pub struct JqFilterCache {
+    filters: moka::sync::Cache<FilterCacheKey, Arc<Filter<JqData>>>,
+}
+
+impl JqFilterCache {
+    pub fn new(config: JqFilterCacheConfig) -> Self {
+        let mut builder = moka::sync::Cache::builder()
+            .max_capacity(config.max_bytes)
+            .weigher(|key: &FilterCacheKey, _| estimated_filter_bytes(&key.0));
+        if let Some(tti) = checked_time_to_idle(config.time_to_idle) {
+            builder = builder.time_to_idle(tti);
+        }
+        Self {
+            filters: builder.build(),
+        }
+    }
+
+    /// Run a jq filter. Only the `params` the filter references are exposed,
+    /// as `$key`; unreferenced ones are never converted.
+    pub fn execute(
+        &self,
+        input: &serde_json::Value,
+        filter_expr: &str,
+        params: &BTreeMap<String, Arc<serde_json::Value>>,
+    ) -> Result<serde_json::Value> {
+        let bound = bound_variables(filter_expr, params);
+        let names = bound.iter().map(|(k, _)| (*k).to_owned()).collect();
+        // Concurrent misses on the same key compile once; errors are not cached.
+        let filter = self
+            .filters
+            .try_get_with((filter_expr.to_owned(), names), || {
+                let names: Vec<String> = bound.iter().map(|(k, _)| (*k).to_owned()).collect();
+                compile_filter(filter_expr, &names, params).map(Arc::new)
+            })
+            .map_err(|e| anyhow!("{e}"))?;
+        run_filter(&filter, filter_expr, &bound, input)
+    }
+
+    #[cfg(test)]
+    fn entry_count(&self) -> u64 {
+        self.filters.entry_count()
+    }
+
+    #[cfg(test)]
+    fn run_pending_tasks(&self) {
+        self.filters.run_pending_tasks();
+    }
+}
+
+/// Cache used by [`execute_jq`]; callers that need their own limits create a
+/// [`JqFilterCache`].
+static DEFAULT_FILTER_CACHE: LazyLock<JqFilterCache> =
+    LazyLock::new(|| JqFilterCache::new(JqFilterCacheConfig::default()));
+
+/// Parsing the standard library dominates compile time, so do it once.
+static STD_DEFS: LazyLock<Vec<Def<&'static str>>> = LazyLock::new(|| {
+    jaq_core::defs()
+        .chain(jaq_std::defs())
+        .chain(jaq_json::defs())
+        .collect()
+});
+
+/// Names of the `$variables` that appear in a jq filter, without the `$`.
+///
+/// This is a textual scan, so names inside string literals are included too.
+/// Over-approximation only binds an extra variable; a real reference always
+/// appears in the text, so no referenced variable is ever missed.
+pub fn referenced_variables(filter: &str) -> BTreeSet<&str> {
+    let bytes = filter.as_bytes();
+    let mut names = BTreeSet::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len()
+                && (bytes[end] == b'_'
+                    || bytes[end].is_ascii_alphabetic()
+                    || (end > start && bytes[end].is_ascii_digit()))
+            {
+                end += 1;
+            }
+            if end > start {
+                names.insert(&filter[start..end]);
+            }
+            i = end.max(start);
+        } else {
+            i += 1;
+        }
+    }
+    names
+}
+
+/// Variables from `params` that `filter` references, in `params` order.
+fn bound_variables<'p>(
+    filter: &str,
+    params: &'p BTreeMap<String, Arc<serde_json::Value>>,
+) -> Vec<(&'p str, &'p serde_json::Value)> {
+    let referenced = referenced_variables(filter);
+    params
+        .iter()
+        .filter(|(k, _)| referenced.contains(k.as_str()))
+        .map(|(k, v)| (k.as_str(), v.as_ref()))
+        .collect()
+}
+
+#[cfg(test)]
+fn bound_variable_names<'p>(
+    filter: &str,
+    params: &'p BTreeMap<String, Arc<serde_json::Value>>,
+) -> Vec<&'p str> {
+    bound_variables(filter, params)
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect()
+}
+
+fn json_to_val(value: &serde_json::Value) -> Result<Val> {
+    Val::deserialize(value).map_err(|e| anyhow!(e))
+}
+
+fn compile_filter(
     filter_expr: &str,
-    // Note: This will be exposed with `${key}` as the variable name.
+    names: &[String],
     params: &BTreeMap<String, Arc<serde_json::Value>>,
-) -> Result<serde_json::Value> {
-    let loader = Loader::new(
-        jaq_core::defs()
-            .chain(jaq_std::defs())
-            .chain(jaq_json::defs()),
-    );
+) -> Result<Filter<JqData>> {
+    let loader = Loader::new(STD_DEFS.iter().cloned());
     let arena = Arena::default();
     let program: File<&str, JqFileType> = File {
         code: filter_expr,
-        path: (), // ToDo - give this the weaver-config location.
+        path: (),
     };
-
-    // parse the filter
     let modules = loader
         .load(&arena, program)
         .map_err(load_errors)
         .map_err(|e| anyhow!(e))?;
 
-    let (names, values) = prepare_jq_context(params)?;
+    let globals: Vec<String> = names.iter().map(|n| format!("${n}")).collect();
     let funs = jaq_core::funs::<JqData>()
         .chain(jaq_std::funs::<JqData>())
         .chain(jaq_json::funs::<JqData>());
     // The `(name, args, native)` map shortens `&'static str` to a borrow that
     // matches `with_global_vars`'s shorter lifetime; without it the compiler
-    // unifies on `'static` and rejects `names` (a local Vec).
+    // unifies on `'static` and rejects `globals` (a local Vec).
     #[allow(clippy::map_identity)]
     let filter = Compiler::<&str, JqData>::default()
         .with_funs(funs.map(|(name, args, native)| (name, args, native)))
-        .with_global_vars(names.iter().map(|s| s.as_str()))
+        .with_global_vars(globals.iter().map(|s| s.as_str()))
         .compile(modules)
         .map_err(|errs| {
             let available_vars: Vec<&str> = params.keys().map(|s| s.as_str()).collect();
@@ -85,10 +221,34 @@ pub fn execute_jq(
             compile_errors(errs)
         })
         .map_err(|e| anyhow!(e))?;
+    Ok(filter)
+}
+
+/// Run a jq filter using a process-wide cache with default limits.
+pub fn execute_jq(
+    input: serde_json::Value,
+    filter_expr: &str,
+    params: &BTreeMap<String, Arc<serde_json::Value>>,
+) -> Result<serde_json::Value> {
+    DEFAULT_FILTER_CACHE.execute(&input, filter_expr, params)
+}
+
+fn run_filter(
+    filter: &Filter<JqData>,
+    filter_expr: &str,
+    bound: &[(&str, &serde_json::Value)],
+    input: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let values = bound
+        .iter()
+        .map(|(k, v)| {
+            json_to_val(v).map_err(|e| anyhow!("failed to convert jq context variable ${k}: {e}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let ctx = Ctx::<JqData>::new(&filter.lut, Vars::new(values));
 
-    let input_val = serde_json::from_value::<Val>(input)
-        .map_err(|e| anyhow!("failed to convert jq input value: {e}"))?;
+    let input_val =
+        json_to_val(input).map_err(|e| anyhow!("failed to convert jq input value: {e}"))?;
     let mut values = Vec::new();
     // `unwrap_valr` strips internal control-flow exceptions (tail call,
     // break) that must never reach the caller, leaving only proper errors.
@@ -402,6 +562,240 @@ mod tests {
     #[test]
     fn round_trip_object_keys_preserved() {
         assert_round_trip(json!({"z": 1, "a": 2, "m": 3}));
+    }
+
+    // --- referenced variable extraction ---
+
+    use super::{
+        JqFilterCache, JqFilterCacheConfig, bound_variable_names, estimated_filter_bytes,
+        referenced_variables,
+    };
+    use std::collections::BTreeSet;
+    use std::time::Duration;
+
+    fn refs(filter: &str) -> BTreeSet<&str> {
+        referenced_variables(filter)
+    }
+
+    #[test]
+    fn referenced_variables_extracts_names() {
+        assert_eq!(refs("$a.k"), BTreeSet::from(["a"]));
+        assert_eq!(refs("$a + $b_2"), BTreeSet::from(["a", "b_2"]));
+        assert_eq!(refs("\"x\\($a)y\""), BTreeSet::from(["a"]));
+        assert_eq!(refs("{$a, b: $c}"), BTreeSet::from(["a", "c"]));
+        assert_eq!(refs("$__loc__"), BTreeSet::from(["__loc__"]));
+        assert_eq!(refs(".a | .b"), BTreeSet::new());
+        assert_eq!(refs("$"), BTreeSet::new());
+        assert_eq!(refs("$1"), BTreeSet::new());
+    }
+
+    #[test]
+    fn referenced_variables_over_approximates_string_literals() {
+        // Binding a variable that is only mentioned in a string is harmless;
+        // missing a real reference would not be.
+        assert_eq!(refs("\"$x\""), BTreeSet::from(["x"]));
+    }
+
+    #[test]
+    fn only_referenced_and_available_variables_are_bound() {
+        let params = BTreeMap::from([
+            ("a".to_owned(), Arc::new(json!(1))),
+            ("big".to_owned(), Arc::new(json!({"huge": [1, 2, 3]}))),
+            ("c".to_owned(), Arc::new(json!(3))),
+        ]);
+        assert_eq!(
+            bound_variable_names("$a + $c + $missing", &params),
+            vec!["a", "c"]
+        );
+        assert!(bound_variable_names(".", &params).is_empty());
+    }
+
+    // --- compile cache ---
+
+    #[test]
+    fn cached_filter_rebinds_values_on_each_call() {
+        for v in 0..3 {
+            let params = BTreeMap::from([("v".to_owned(), Arc::new(json!(v)))]);
+            assert_eq!(
+                execute_jq(json!(null), "$v * 10", &params).unwrap(),
+                json!(v * 10)
+            );
+        }
+    }
+
+    #[test]
+    fn cached_filter_is_keyed_by_bound_variable_set() {
+        let filter = "[$b, $c]";
+        let bc = BTreeMap::from([
+            ("b".to_owned(), Arc::new(json!("b"))),
+            ("c".to_owned(), Arc::new(json!("c"))),
+        ]);
+        assert_eq!(
+            execute_jq(json!(null), filter, &bc).unwrap(),
+            json!(["b", "c"])
+        );
+        // Adding a lower-sorted, unreferenced name must not shift positions.
+        let mut abc = bc.clone();
+        abc.insert("a".to_owned(), Arc::new(json!("a")));
+        assert_eq!(
+            execute_jq(json!(null), filter, &abc).unwrap(),
+            json!(["b", "c"])
+        );
+        // Removing one referenced name must fail instead of reusing the cache.
+        let only_c = BTreeMap::from([("c".to_owned(), Arc::new(json!("c")))]);
+        assert!(execute_jq(json!(null), filter, &only_c).is_err());
+    }
+
+    #[test]
+    fn compile_errors_are_not_cached() {
+        let filter = "$late_output.value";
+        let err = execute_jq(json!(null), filter, &BTreeMap::new())
+            .expect_err("undefined variable must fail");
+        assert!(format!("{err}").contains("undefined"), "{err}");
+        let params = BTreeMap::from([("late_output".to_owned(), Arc::new(json!({"value": 7})))]);
+        assert_eq!(execute_jq(json!(null), filter, &params).unwrap(), json!(7));
+    }
+
+    fn small_cache(entries: u64, time_to_idle: Option<Duration>) -> JqFilterCache {
+        JqFilterCache::new(JqFilterCacheConfig {
+            max_bytes: entries * u64::from(estimated_filter_bytes("$v + 00")),
+            time_to_idle,
+        })
+    }
+
+    #[test]
+    fn filter_weight_grows_with_filter_length() {
+        let short = estimated_filter_bytes(".a");
+        let long = estimated_filter_bytes(&".a".repeat(1000));
+        assert!(
+            short >= 80 * 1024,
+            "base cost of a compiled filter: {short}"
+        );
+        assert!(long > short);
+        assert_eq!(estimated_filter_bytes(&"x".repeat(200_000_000)), u32::MAX);
+    }
+
+    #[test]
+    fn cache_respects_memory_limit_and_keeps_results_correct() {
+        let cache = small_cache(2, None);
+        for round in 0..2 {
+            for i in 10..20 {
+                let params = BTreeMap::from([("v".to_owned(), Arc::new(json!(round)))]);
+                let got = cache
+                    .execute(&json!(null), &format!("$v + {i}"), &params)
+                    .unwrap();
+                assert_eq!(got, json!(round + i));
+            }
+        }
+        cache.run_pending_tasks();
+        assert!(cache.entry_count() <= 2, "entries: {}", cache.entry_count());
+    }
+
+    #[test]
+    fn cache_evicts_idle_entries() {
+        let cache = small_cache(10, Some(Duration::from_millis(50)));
+        let params = BTreeMap::from([("v".to_owned(), Arc::new(json!(1)))]);
+        assert_eq!(
+            cache.execute(&json!(null), "$v + 1", &params).unwrap(),
+            json!(2)
+        );
+        cache.run_pending_tasks();
+        assert_eq!(cache.entry_count(), 1);
+        std::thread::sleep(Duration::from_millis(200));
+        cache.run_pending_tasks();
+        assert_eq!(cache.entry_count(), 0);
+        // An evicted filter is recompiled transparently.
+        assert_eq!(
+            cache.execute(&json!(null), "$v + 1", &params).unwrap(),
+            json!(2)
+        );
+    }
+
+    #[test]
+    fn oversized_time_to_idle_does_not_panic() {
+        let cache = small_cache(10, Some(Duration::MAX));
+        assert_eq!(
+            cache.execute(&json!(1), ". + 1", &BTreeMap::new()).unwrap(),
+            json!(2)
+        );
+    }
+
+    #[test]
+    fn zero_memory_limit_disables_caching() {
+        let cache = small_cache(0, None);
+        let params = BTreeMap::new();
+        for _ in 0..3 {
+            assert_eq!(
+                cache.execute(&json!(1), ". + 1", &params).unwrap(),
+                json!(2)
+            );
+        }
+        cache.run_pending_tasks();
+        assert_eq!(cache.entry_count(), 0);
+    }
+
+    #[test]
+    fn cache_reports_compile_errors_with_message() {
+        let cache = small_cache(10, None);
+        let err = cache
+            .execute(&json!(null), "$nope", &BTreeMap::new())
+            .expect_err("undefined variable must fail");
+        assert!(format!("{err}").contains("undefined"), "{err}");
+    }
+
+    #[test]
+    fn concurrent_evaluation_of_cached_filter_keeps_values_separate() {
+        let handles: Vec<_> = (0..8)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        let v = t * 1000 + i;
+                        let params = BTreeMap::from([("v".to_owned(), Arc::new(json!(v)))]);
+                        let got = execute_jq(json!(1), ". + $v", &params).unwrap();
+                        assert_eq!(got, json!(v + 1));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    // Manual timing check; run with:
+    // cargo test --release -p command-utils jq_timing -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn jq_timing() {
+        use std::time::Instant;
+        fn big(kb: usize) -> serde_json::Value {
+            let item = json!({"id": 1, "body": "x".repeat(60), "tags": ["a", "b"]});
+            let n = kb * 1024 / serde_json::to_string(&item).unwrap().len();
+            json!({"items": vec![item; n]})
+        }
+        fn time(label: &str, mut f: impl FnMut()) {
+            let n = 300;
+            let started = Instant::now();
+            for _ in 0..n {
+                f();
+            }
+            eprintln!(
+                "{label:<40} {:>9.1} us/eval",
+                started.elapsed().as_secs_f64() * 1e6 / n as f64
+            );
+        }
+        let small = BTreeMap::from([("a".to_owned(), Arc::new(json!({"k": 1})))]);
+        time("fixed cost ($a.k)", || {
+            execute_jq(json!(1), "$a.k", &small).unwrap();
+        });
+        let mut with_big = small.clone();
+        with_big.insert("big".to_owned(), Arc::new(big(200)));
+        time("unreferenced 200KB variable", || {
+            execute_jq(json!(1), "$a.k", &with_big).unwrap();
+        });
+        time("referenced 200KB variable", || {
+            execute_jq(json!(1), "$big.items | length", &with_big).unwrap();
+        });
     }
 
     fn assert_fromjson_finishes_with_error(input: serde_json::Value, filter: &str) {
