@@ -183,6 +183,10 @@ fn json_to_val(value: &serde_json::Value) -> Result<Val> {
     Val::deserialize(value).map_err(|e| anyhow!(e))
 }
 
+fn fromjson_parse_error(error: jaq_json::read::Error) -> jaq_core::Error<Val> {
+    jaq_core::Error::new(Val::from(format!("cannot parse JSON: {error}")))
+}
+
 fn compile_filter(
     filter_expr: &str,
     names: &[String],
@@ -200,9 +204,41 @@ fn compile_filter(
         .map_err(|e| anyhow!(e))?;
 
     let globals: Vec<String> = names.iter().map(|n| format!("${n}")).collect();
+    let json_funs = jaq_json::funs::<JqData>();
     let funs = jaq_core::funs::<JqData>()
         .chain(jaq_std::funs::<JqData>())
-        .chain(jaq_json::funs::<JqData>());
+        .chain(json_funs.filter(|(name, _, _)| *name != "fromjson"))
+        .chain(std::iter::once(jaq_core::native::run((
+            "fromjson",
+            jaq_core::native::v(0),
+            |cv: jaq_core::Cv<'_, JqData>| -> jaq_core::ValXs<'_, Val> {
+                let input = cv.1.clone();
+                let bytes = match input.try_as_utf8_bytes_owned() {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        return jaq_core::native::bome(Err(jaq_core::Error::typ(input, "string")));
+                    }
+                };
+                Box::new(
+                    jaq_json::bytes_valrs(bytes, |bytes| {
+                        if bytes
+                            .iter()
+                            .all(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
+                        {
+                            Box::new(std::iter::once(
+                                jaq_json::read::parse_single(bytes).map_err(fromjson_parse_error),
+                            ))
+                        } else {
+                            Box::new(
+                                jaq_json::read::parse_many(bytes)
+                                    .map(|result| result.map_err(fromjson_parse_error)),
+                            )
+                        }
+                    })
+                    .map(|result| result.map_err(jaq_core::Exn::from)),
+                )
+            },
+        ))));
     // The `(name, args, native)` map shortens `&'static str` to a borrow that
     // matches `with_global_vars`'s shorter lifetime; without it the compiler
     // unifies on `'static` and rejects `globals` (a local Vec).
@@ -830,6 +866,70 @@ mod tests {
         assert_eq!(result, json!([1, 2, 3]));
     }
 
+    #[test]
+    fn fromjson_json_array_is_preserved() {
+        let result = execute_jq(json!("[]"), "fromjson", &BTreeMap::new()).unwrap();
+        assert_eq!(result, json!([]));
+    }
+
+    #[test]
+    fn fromjson_preserves_scalar_and_surrounding_whitespace_values() {
+        for (input, expected) in [
+            ("null", json!(null)),
+            ("false", json!(false)),
+            ("0", json!(0)),
+            ("\"\"", json!("")),
+            ("  {\"key\":1}\n", json!({"key": 1})),
+        ] {
+            let result = execute_jq(json!(input), "fromjson", &BTreeMap::new()).unwrap();
+            assert_eq!(result, expected, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn fromjson_empty_json_whitespace_returns_runtime_error() {
+        for input in ["", " ", "\t", "\n", "\r", " \t\r\n "] {
+            let err = execute_jq(json!(input), "fromjson", &BTreeMap::new())
+                .expect_err("empty JSON input must return a runtime error");
+            assert!(
+                format!("{err}").contains("jq runtime error"),
+                "expected runtime error for {input:?}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn fromjson_empty_json_whitespace_is_catchable() {
+        for input in ["", " \t\r\n "] {
+            let result = execute_jq(
+                json!(input),
+                "try fromjson catch {caught: true}",
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            assert_eq!(result, json!({"caught": true}));
+        }
+    }
+
+    #[test]
+    fn fromjson_empty_error_can_build_catch_fallback_object() {
+        let result = execute_jq(
+            json!(""),
+            "(try fromjson catch null) as $p | {parsed: $p}",
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result, json!({"parsed": null}));
+    }
+
+    #[test]
+    fn unrelated_zero_output_filters_remain_empty_arrays() {
+        for filter in ["empty", "select(false)"] {
+            let result = execute_jq(json!(1), filter, &BTreeMap::new()).unwrap();
+            assert_eq!(result, json!([]), "filter: {filter}");
+        }
+    }
+
     // jaq-json's fromjson uses parse_many. An invalid leading token (markdown
     // fence, bare word) is peeked but not consumed, so the iterator never
     // ends unless the caller stops on the first error.
@@ -846,6 +946,16 @@ mod tests {
     #[test]
     fn fromjson_invalid_leading_token_returns_error_without_hanging() {
         assert_fromjson_finishes_with_error(json!("hello"), "fromjson");
+    }
+
+    #[test]
+    fn fromjson_non_string_returns_error() {
+        assert_fromjson_finishes_with_error(json!(42), "fromjson");
+    }
+
+    #[test]
+    fn fromjson_unicode_whitespace_is_not_treated_as_empty_json_whitespace() {
+        assert_fromjson_finishes_with_error(json!("\u{00a0}"), "fromjson");
     }
 
     #[test]
