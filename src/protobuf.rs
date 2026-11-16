@@ -37,9 +37,10 @@ pub trait ProtobufDescriptorLoader {
         resolver.add(InMemorySource(proto_string.to_string()));
         resolver.add(GoogleFileResolver::new());
         let mut compiler = protox::Compiler::with_file_resolver(resolver);
+        // protox puts the file:line:column of an error only in its Debug form.
         compiler
             .open_file(SOURCE_FILE_NAME)
-            .context("Failed to compile protos")?;
+            .map_err(|e| anyhow::anyhow!("Failed to compile protos: {e:?}"))?;
         Ok(compiler.descriptor_pool())
     }
 }
@@ -837,14 +838,18 @@ mod tests {
         Ok(())
     }
 
+    // Errors on user-supplied protos must say where the source is wrong.
     #[test]
     fn test_build_protobuf_descriptor_rejects_invalid_proto() {
-        assert!(build("syntax = \"proto3\"; message Broken { string id = ; }").is_err());
-        assert!(
-            build("syntax = \"proto3\"; import \"other/dep.proto\"; message A { dep.B b = 1; }")
-                .is_err()
-        );
-        assert!(build("syntax = \"proto3\"; message A { Missing m = 1; }").is_err());
+        let message = |proto: &str| format!("{:#}", build(proto).unwrap_err());
+        let syntax = message("syntax = \"proto3\";\nmessage A {\n  string id = ;\n}\n");
+        assert!(syntax.contains("temp.proto:3:"), "{syntax}");
+        let import = message("syntax = \"proto3\";\nimport \"other/dep.proto\";\n");
+        assert!(import.contains("temp.proto:2:"), "{import}");
+        assert!(import.contains("other/dep.proto"), "{import}");
+        let unknown_type = message("syntax = \"proto3\";\nmessage A {\n  Missing m = 1;\n}\n");
+        assert!(unknown_type.contains("temp.proto:3:"), "{unknown_type}");
+        assert!(unknown_type.contains("Missing"), "{unknown_type}");
     }
 
     // Editions are not supported: they are reported as an error, not a panic.
