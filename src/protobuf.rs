@@ -7,57 +7,40 @@ use prost_reflect::{
     DescriptorPool, DeserializeOptions, DynamicMessage, Kind, MessageDescriptor, ReflectMessage,
     SerializeOptions,
 };
+use protox::file::{ChainFileResolver, File, FileResolver, GoogleFileResolver};
 use serde_json::de::Deserializer;
 use std::io::Cursor;
-use std::path::Path;
-use std::{fs, path::PathBuf};
-use tempfile::{self, TempDir};
+
+/// Name the proto source is compiled under; it shows in error messages.
+const SOURCE_FILE_NAME: &str = "temp.proto";
+
+/// Serves the single in-memory proto source under `SOURCE_FILE_NAME`.
+struct InMemorySource(String);
+
+impl FileResolver for InMemorySource {
+    fn open_file(&self, name: &str) -> Result<File, protox::Error> {
+        if name == SOURCE_FILE_NAME {
+            File::from_source(name, &self.0)
+        } else {
+            Err(protox::Error::file_not_found(name))
+        }
+    }
+}
 
 pub trait ProtobufDescriptorLoader {
-    fn build_protobuf_descriptor(proto_string: &String) -> Result<DescriptorPool> {
-        let (tempdir, tempfile) =
-            Self::_store_temp_proto_file(&"temp.proto".to_string(), proto_string)
-                .context("on storing temp proto file")?;
-        let descriptor_file = tempdir.path().join("descriptor.bin");
-        tonic_prost_build::configure()
-            // only output message descriptor
-            .build_server(false)
-            .build_client(false)
-            .build_transport(false)
-            .out_dir(&tempdir)
-            .protoc_arg("--experimental_allow_proto3_optional")
-            .file_descriptor_set_path(&descriptor_file) // for reflection
-            .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-            .compile_protos(&[&tempfile], &[&tempdir.path().to_path_buf()])
-            .context(format!("Failed to compile protos {:?}", tempfile))?;
-
-        let descriptor = Self::_load_protobuf_descriptor(&descriptor_file)?;
-        Ok(descriptor)
-    }
-
-    fn _load_protobuf_descriptor(descriptor_file: &Path) -> Result<DescriptorPool> {
-        let descriptor_bytes = fs::read(descriptor_file).context(format!(
-            "on reading descriptor file: {:?}",
-            descriptor_file.to_str()
-        ))?;
-        let descriptor_pool = DescriptorPool::decode(descriptor_bytes.as_ref())
-            .context("on decoding descriptor bytes")?;
-        Ok(descriptor_pool)
-    }
-
-    fn _store_temp_proto_file(
-        proto_name: &String,
-        proto_string: &String,
-    ) -> Result<(TempDir, PathBuf)> {
-        let temp_dir =
-            tempfile::tempdir().context(format!("on creating tempfile for proto: {proto_name}"))?;
-        let tempfile = temp_dir.path().join(proto_name);
-        // For now we need to write files to the disk.
-        fs::write(&tempfile, proto_string).context(format!(
-            "on saving tempfile for proto: {:?}",
-            tempfile.to_str()
-        ))?;
-        Ok((temp_dir, tempfile))
+    /// Compiles a proto source in process, so no protoc is needed at runtime.
+    /// The source must be self-contained: only the well-known types can be
+    /// imported. Imported files come before the source in the pool, as with
+    /// protoc --include_imports.
+    fn build_protobuf_descriptor(proto_string: &str) -> Result<DescriptorPool> {
+        let mut resolver = ChainFileResolver::new();
+        resolver.add(InMemorySource(proto_string.to_string()));
+        resolver.add(GoogleFileResolver::new());
+        let mut compiler = protox::Compiler::with_file_resolver(resolver);
+        compiler
+            .open_file(SOURCE_FILE_NAME)
+            .context("Failed to compile protos")?;
+        Ok(compiler.descriptor_pool())
     }
 }
 
@@ -71,7 +54,7 @@ const MAP_VALUE_FIELD_NUMBER: u32 = 2;
 
 impl ProtobufDescriptorLoader for ProtobufDescriptor {}
 impl ProtobufDescriptor {
-    pub fn new(proto_string: &String) -> Result<Self> {
+    pub fn new(proto_string: &str) -> Result<Self> {
         let pool = ProtobufDescriptor::build_protobuf_descriptor(proto_string)?;
         Ok(ProtobufDescriptor { pool })
     }
@@ -719,8 +702,7 @@ mod tests {
             string description = 3;
         }
         "#;
-        let descriptor_pool =
-            ProtobufDescriptorImpl::build_protobuf_descriptor(&proto_string.to_string())?;
+        let descriptor_pool = ProtobufDescriptorImpl::build_protobuf_descriptor(proto_string)?;
         println!(
             "messages:{:?}",
             descriptor_pool.all_messages().collect_vec()
@@ -738,6 +720,146 @@ mod tests {
         Ok(())
     }
 
+    fn build(proto: &str) -> Result<DescriptorPool> {
+        ProtobufDescriptorImpl::build_protobuf_descriptor(proto)
+    }
+
+    fn file_names(pool: &DescriptorPool) -> Vec<String> {
+        pool.files().map(|f| f.name().to_string()).collect()
+    }
+
+    fn message_names(pool: &DescriptorPool) -> Vec<String> {
+        pool.all_messages()
+            .map(|m| m.full_name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn test_build_protobuf_descriptor_proto3_features() -> Result<()> {
+        let pool = build(
+            r#"
+            syntax = "proto3";
+            package demo.v1;
+            enum Color { COLOR_UNSPECIFIED = 0; RED = 1; }
+            message Outer {
+              message Inner { int32 depth = 1; }
+              optional string label = 1;
+              map<string, Inner> children = 2;
+              oneof choice { string text = 3; Color color = 4; }
+              repeated Inner items = 5;
+            }
+            service Echo { rpc Call(Outer) returns (Outer.Inner); }
+            "#,
+        )?;
+        let outer = pool.get_message_by_name("demo.v1.Outer").unwrap();
+        let field = |name| outer.get_field_by_name(name).unwrap();
+        assert!(field("label").supports_presence());
+        assert!(field("children").is_map());
+        assert!(
+            outer
+                .oneofs()
+                .any(|o| o.name() == "choice" && !o.is_synthetic())
+        );
+        assert_eq!(field("text").json_name(), "text");
+        assert!(pool.get_enum_by_name("demo.v1.Color").is_some());
+        let call = pool.get_service_by_name("demo.v1.Echo").unwrap();
+        assert_eq!(
+            call.methods().next().unwrap().output().full_name(),
+            "demo.v1.Outer.Inner"
+        );
+        // Without imports, the first message of the source comes first.
+        assert_eq!(
+            message_names(&pool).first().map(String::as_str),
+            Some("demo.v1.Outer")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_protobuf_descriptor_proto2() -> Result<()> {
+        let pool = build(
+            r#"
+            syntax = "proto2";
+            message Legacy {
+              required string id = 1;
+              optional int32 retries = 2 [default = 3];
+            }
+            "#,
+        )?;
+        let legacy = pool.get_message_by_name("Legacy").unwrap();
+        assert!(legacy.get_field_by_name("id").unwrap().is_required());
+        assert_eq!(
+            legacy.get_field_by_name("retries").unwrap().default_value(),
+            prost_reflect::Value::I32(3)
+        );
+        Ok(())
+    }
+
+    // Well-known imports resolve without an include path, and imported files
+    // precede the importing one, as protoc --include_imports orders them.
+    #[test]
+    fn test_build_protobuf_descriptor_resolves_well_known_imports() -> Result<()> {
+        let pool = build(
+            r#"
+            syntax = "proto3";
+            import "google/protobuf/timestamp.proto";
+            import "google/protobuf/empty.proto";
+            import "google/protobuf/struct.proto";
+            message Event {
+              google.protobuf.Timestamp at = 1;
+              google.protobuf.Struct payload = 2;
+            }
+            service Events { rpc Clear(google.protobuf.Empty) returns (Event); }
+            "#,
+        )?;
+        assert_eq!(
+            file_names(&pool),
+            [
+                "google/protobuf/timestamp.proto",
+                "google/protobuf/empty.proto",
+                "google/protobuf/struct.proto",
+                "temp.proto",
+            ]
+        );
+        assert_eq!(
+            message_names(&pool).last().map(String::as_str),
+            Some("Event")
+        );
+        let at = pool
+            .get_message_by_name("Event")
+            .unwrap()
+            .get_field_by_name("at");
+        let at_kind = at.unwrap().kind();
+        assert_eq!(
+            at_kind.as_message().unwrap().full_name(),
+            "google.protobuf.Timestamp"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_protobuf_descriptor_rejects_invalid_proto() {
+        assert!(build("syntax = \"proto3\"; message Broken { string id = ; }").is_err());
+        assert!(
+            build("syntax = \"proto3\"; import \"other/dep.proto\"; message A { dep.B b = 1; }")
+                .is_err()
+        );
+        assert!(build("syntax = \"proto3\"; message A { Missing m = 1; }").is_err());
+    }
+
+    // Editions are not supported: they are reported as an error, not a panic.
+    #[test]
+    fn test_build_protobuf_descriptor_rejects_editions() {
+        assert!(build("edition = \"2023\"; message Ed { string id = 1; }").is_err());
+    }
+
+    #[test]
+    fn test_build_protobuf_descriptor_empty_source_has_no_message() -> Result<()> {
+        let pool = build("")?;
+        assert!(message_names(&pool).is_empty());
+        Ok(())
+    }
+
     #[test]
     fn test_read_by_protobuf_descriptor() -> Result<()> {
         let proto_string = r#"
@@ -749,7 +871,7 @@ message TestArg {
   repeated string args = 1;
 }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let test_arg_descriptor = descriptor.get_message_by_name("TestArg").unwrap();
         assert_eq!(test_arg_descriptor.full_name(), "TestArg");
         assert_eq!(test_arg_descriptor.package_name(), "");
@@ -785,7 +907,7 @@ message TestArg {
             repeated string tags = 4;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         assert_eq!(
             descriptor.get_message_names(),
             vec!["jobworkerp.data.Job".to_string()]
@@ -871,7 +993,7 @@ message TestArg {
             double priority = 5;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_descriptor = descriptor.get_message_by_name("CommandArgs").unwrap();
 
         let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
@@ -912,7 +1034,7 @@ message TestArg {
             Address address = 3;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_descriptor = descriptor.get_message_by_name("Person").unwrap();
 
         let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
@@ -952,7 +1074,7 @@ message TestArg {
             Status status = 2;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_descriptor = descriptor.get_message_by_name("Task").unwrap();
 
         let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
@@ -988,7 +1110,7 @@ message TestArg {
             map<string, int32> counters = 3;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_descriptor = descriptor.get_message_by_name("Config").unwrap();
 
         let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
@@ -1046,7 +1168,7 @@ message TestArg {
             Company employer = 3;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_descriptor = descriptor.get_message_by_name("Person").unwrap();
 
         let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
@@ -1120,7 +1242,7 @@ message TestArg {
             repeated Category categories = 2;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_descriptor = descriptor.get_message_by_name("Catalog").unwrap();
 
         let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
@@ -1193,7 +1315,7 @@ message TestArg {
             map<string, Resource> resources = 2;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_descriptor = descriptor.get_message_by_name("Namespace").unwrap();
 
         let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
@@ -1245,7 +1367,7 @@ message TestArg {
         message_name: &str,
         json_value: &serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_desc = descriptor.get_message_by_name(message_name).unwrap();
         let bytes =
             ProtobufDescriptor::json_value_to_message(msg_desc.clone(), json_value, true, true)?;
@@ -1261,7 +1383,7 @@ message TestArg {
         message Msg { Role role = 1; string text = 2; }
         "#;
         let input = serde_json::json!({"role": "SYSTEM", "text": "hello"});
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
 
         // normalize_enum_values should return None (no changes needed)
@@ -1337,7 +1459,7 @@ message TestArg {
         message Item { Color color = 1; }
         "#;
         let input = serde_json::json!({"color": "green"});
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Item").unwrap();
         let normalized = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
         // "green" cannot be uppercased to a valid value either, so no change
@@ -1352,7 +1474,7 @@ message TestArg {
         message Msg { string data = 1; bytes payload = 2; int64 count = 3; }
         "#;
         let input = serde_json::json!({"data": "large_string", "count": 42});
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
         let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
         assert!(result.is_none(), "no enum fields means no allocation");
@@ -1471,7 +1593,7 @@ message TestArg {
             "mode": "auto",
             "count": 100
         });
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Config").unwrap();
         let normalized = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
         // Should have allocated because "auto" → "AUTO"
@@ -1490,7 +1612,7 @@ message TestArg {
         enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
         message Msg { Role role = 1; string text = 2; }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
         // json_to_message is a streaming path without normalization;
         // use json_value_to_message for case-insensitive enum handling.
@@ -1513,7 +1635,7 @@ message TestArg {
         enum Role { UNSPECIFIED = 0; SYSTEM = 1; USER = 2; }
         message Msg { Role role = 1; string text = 2; }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
         let result = ProtobufDescriptor::json_to_message(
             msg_desc,
@@ -1536,7 +1658,7 @@ message TestArg {
         "#;
         // Numeric enum values should work without normalization
         let input = serde_json::json!({"role": 2});
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
         let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
         assert!(
@@ -1571,7 +1693,7 @@ message TestArg {
         enum Role { UNSPECIFIED = 0; SYSTEM = 1; }
         message Msg { Role role = 1; }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Msg").unwrap();
         // Non-object input returns None
         let result =
@@ -1612,7 +1734,7 @@ message TestArg {
         message Registry { map<string, Status> entries = 1; }
         "#;
         let input = serde_json::json!({"entries": {"a": "ACTIVE", "b": "INACTIVE"}});
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Registry").unwrap();
         let result = ProtobufDescriptor::normalize_enum_values(&msg_desc, &input);
         assert!(
@@ -1644,7 +1766,7 @@ message TestArg {
             bool with_stderr = 6;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_descriptor = descriptor.get_message_by_name("PythonCommandArgs").unwrap();
 
         let json_schema = ProtobufDescriptor::message_descriptor_to_json_schema(&msg_descriptor);
@@ -1696,7 +1818,7 @@ message TestArg {
         syntax = "proto3";
         message Simple { string name = 1; }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
         // json_to_message delegates with ignore_unknown_fields=false, so unknown fields cause error
         let json_str = r#"{"name": "test", "nonExistent": "value"}"#;
@@ -1711,7 +1833,7 @@ message TestArg {
         syntax = "proto3";
         message Simple { string name = 1; }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
         let input = serde_json::json!({"name": "test", "nonExistent": "value"});
         // With ignore_unknown_fields=true, unknown fields are silently ignored
@@ -1730,7 +1852,7 @@ message TestArg {
         syntax = "proto3";
         message Simple { string name = 1; int32 count = 2; }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("Simple").unwrap();
         // Empty object should parse successfully
         let bytes = ProtobufDescriptor::json_to_message(msg_desc.clone(), "{}", false)?;
@@ -1758,7 +1880,7 @@ message TestArg {
         message ListMsg { repeated string items = 1; }
         "#;
         let input = serde_json::json!({"items": []});
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("ListMsg").unwrap();
         let bytes =
             ProtobufDescriptor::json_value_to_message(msg_desc.clone(), &input, false, true)?;
@@ -1788,7 +1910,7 @@ message TestArg {
             int64 thread_id = 2;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto_string.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto_string)?;
         let msg_desc = descriptor.get_message_by_name("SnowflakeRequest").unwrap();
 
         // 7444174660348207020 > 2^53-1 (9007199254740991): a JS-number
@@ -1831,7 +1953,7 @@ message TestArg {
             optional bool as_json = 6;
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("GrpcArgs").unwrap();
 
         // "request" (oneof group name) with a string value should be remapped to "jsonBody"
@@ -1893,7 +2015,7 @@ message TestArg {
             }
         }
         "#;
-        let descriptor = ProtobufDescriptor::new(&proto.to_string())?;
+        let descriptor = ProtobufDescriptor::new(proto)?;
         let msg_desc = descriptor.get_message_by_name("GrpcArgs").unwrap();
 
         // Using actual field name "jsonBody" should work without remapping.
